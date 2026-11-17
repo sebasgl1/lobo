@@ -1,0 +1,72 @@
+name: Compilar APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Pruebas de lógica y compilar APK optimizado
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest assembleRelease assembleDebug assembleDebugAndroidTest --stacktrace
+
+      - name: Activar aceleración del emulador
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Pruebas de pantalla en un celular virtual. Luego se instala el APK optimizado
+      # (el mismo que se publica), se abre y se le dan 1500 toques al azar buscando cierres de la app
+      # (los del sistema del emulador no cuentan).
+      - name: Pruebas de pantalla en emulador
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            ./gradlew connectedDebugAndroidTest --stacktrace
+            adb install -r app/build/outputs/apk/release/app-release.apk
+            adb shell am start -W -n io.github.sebasgl1.lobo/.MainActivity
+            sleep 3
+            adb shell pidof io.github.sebasgl1.lobo
+            adb logcat -c
+            adb shell monkey -p io.github.sebasgl1.lobo --pct-syskeys 0 --ignore-crashes --ignore-timeouts -s 42 --throttle 40 1500 > monkey.txt 2>&1 || true
+            tail -3 monkey.txt
+            adb logcat -d -b crash > crash.txt || true
+            if grep -qE "CRASH: io.github.sebasgl1.lobo|ANR in io.github.sebasgl1.lobo" monkey.txt || grep -q "Process: io.github.sebasgl1.lobo" crash.txt; then cat monkey.txt crash.txt; exit 1; fi
+            echo "Sin cierres de la app"
+
+      - name: Preparar APK para descargar
+        run: |
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          cp app/build/outputs/apk/release/app-release.apk lobo.apk
+          ls -la lobo.apk
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Lobo ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          files: lobo.apk
+          make_latest: true
