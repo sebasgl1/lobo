@@ -151,7 +151,8 @@ class Game(context: Context) {
     fun endTurn(turn: Int) {
         val m = match ?: return
         if (turn + 1 < order.size) {
-            screen = Screen.NightPass(turn + 1)
+            // Se guarda el avance tras cada turno: si la app se cierra, nadie repite su turno
+            go(Screen.NightPass(turn + 1))
         } else {
             val d = m.resolveDawn()
             stage = Stage.AFTER_DAWN
@@ -245,7 +246,8 @@ class Game(context: Context) {
     /** "Lo que pensaba el pueblo": de quién sospecharon más los que no tenían poder. */
     fun suspicions(): List<Pair<String, Int>> {
         val m = match ?: return emptyList()
-        return m.log.filterIsInstance<Event.Suspect>().groupingBy { it.target }.eachCount()
+        // Solo el pueblo: en la primera noche tranquila los lobos también "sospechan" y no deben contar
+        return m.log.filterIsInstance<Event.Suspect>().filter { !m.isWolf(it.player) }.groupingBy { it.target }.eachCount()
             .entries.sortedByDescending { it.value }.take(5).map { m.names[it.key] to it.value }
     }
 
@@ -311,7 +313,14 @@ class Game(context: Context) {
         o.put("log", JSONArray().also { a -> m.log.forEach { a.put(eventJson(it)) } })
         when (s) {
             is Screen.Reveal -> o.put("screen", "reveal")
-            is Screen.NightPass, is Screen.NightAct -> o.put("screen", "night")
+            is Screen.NightPass -> {
+                o.put("screen", "night").put("turn", s.turn).put("protect", m.nightProtect())
+                val pr = JSONObject()
+                m.nightProposals().forEach { (k, v) -> pr.put(k.toString(), v) }
+                o.put("proposals", pr)
+                o.put("acted", JSONArray().also { a -> m.nightActed().forEach { a.put(it) } })
+            }
+            is Screen.NightAct -> return checkpoint
             is Screen.Dawn -> o.put("screen", "dawn").put("deaths", JSONArray().also { a -> s.deaths.forEach { a.put(it) } }).put("saved", s.saved)
             is Screen.Hunter -> o.put("screen", "hunter")
             is Screen.Day, is Screen.Vote, is Screen.TieSelect, is Screen.TieVote -> o.put("screen", "day")
@@ -350,9 +359,17 @@ class Game(context: Context) {
             match = m
             stage = Stage.valueOf(o.getString("stage"))
             order = o.getJSONArray("order").let { a -> (0 until a.length()).map { a.getInt(it) } }
+            if (o.getString("screen") == "night") {
+                val pr = o.optJSONObject("proposals")
+                val props = mutableMapOf<Int, Int>()
+                if (pr != null) for (k in pr.keys()) props[k.toInt()] = pr.getInt(k)
+                val ac = o.optJSONArray("acted")
+                val done = if (ac == null) emptySet() else (0 until ac.length()).map { ac.getInt(it) }.toSet()
+                m.restoreNight(props, o.optInt("protect", -1), done)
+            }
             screen = when (o.getString("screen")) {
                 "reveal" -> Screen.Reveal(0)
-                "night" -> Screen.NightPass(0)
+                "night" -> Screen.NightPass(o.optInt("turn", 0).coerceIn(0, maxOf(0, order.size - 1)))
                 "dawn" -> Screen.Dawn(o.getJSONArray("deaths").let { a -> (0 until a.length()).map { a.getInt(it) } }, o.getBoolean("saved"))
                 "hunter" -> Screen.Hunter
                 "day" -> Screen.Day

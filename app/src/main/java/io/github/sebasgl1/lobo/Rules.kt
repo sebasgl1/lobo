@@ -281,6 +281,18 @@ class Match(
         }
     }
 
+    /** Avance de la noche en curso (para guardarla si Android cierra la app a mitad de la ronda). */
+    fun nightProposals(): Map<Int, Int> = proposals.toMap()
+    fun nightProtect(): Int = protectTarget
+    fun nightActed(): Set<Int> = acted.toSet()
+
+    /** Restaura el avance de la noche: quien ya jugó no vuelve a jugar ni puede cambiar su elección. */
+    fun restoreNight(props: Map<Int, Int>, protect: Int, done: Set<Int>) {
+        proposals.clear(); proposals.putAll(props)
+        protectTarget = protect
+        acted.clear(); acted.addAll(done)
+    }
+
     /** Restaura una partida guardada reproduciendo sus datos básicos. */
     fun restore(aliveNow: List<Boolean>, nightNow: Int, docLast: Int, docSelf: Boolean, hunter: Int, win: Team?, events: List<Event>) {
         aliveNow.forEachIndexed { i, v -> alive[i] = v }

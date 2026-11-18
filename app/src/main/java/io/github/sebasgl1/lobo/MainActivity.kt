@@ -94,6 +94,8 @@ import kotlinx.coroutines.delay
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.ui.draw.clip
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 
 class MainActivity : ComponentActivity() {
     private lateinit var game: Game
@@ -296,6 +298,13 @@ fun roleDescription(r: Role) = when (r) {
     Role.CAZADOR -> "Si mueres, te llevas a alguien contigo."
 }
 
+/** Al salir de una pantalla con campo de texto, cierra el teclado para que no aplaste la siguiente pantalla. */
+@Composable
+fun HideKeyboardOnExit() {
+    val kb = LocalSoftwareKeyboardController.current
+    DisposableEffect(Unit) { onDispose { kb?.hide() } }
+}
+
 // ---------- Inicio ----------
 
 @Composable
@@ -352,6 +361,7 @@ fun HowToScreen(game: Game) {
 
 @Composable
 fun SetupScreen(game: Game) {
+    HideKeyboardOnExit()
     var input by remember { mutableStateOf("") }
     val error = game.setupError()
     val add = { if (game.addName(input)) input = "" }
@@ -442,6 +452,7 @@ fun SetupScreen(game: Game) {
                 SectionTitle("Pantalla")
                 SwitchRow("Letra grande", "Textos más grandes en toda la app", game.bigText, tag = "big-text") { game.bigText = it; game.saveConfig() }
 
+                @Suppress("UNUSED_VARIABLE") val refresh = game.version   // se vuelve a leer tras "Reiniciar estadísticas"
                 val stats = game.loadStats()
                 if (stats.isNotEmpty()) {
                     SectionTitle("Estadísticas")

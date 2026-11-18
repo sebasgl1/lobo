@@ -200,4 +200,24 @@ class RulesTest {
         m.vote(6)
         assertTrue(runCatching { m.act(6, 0) }.isFailure)
     }
+
+    @Test fun nocheGuardadaNoDejaRepetirTurno() {
+        val m = match()
+        m.startNight()
+        val order = m.nightOrder()
+        val firstWolf = order.first { m.isWolf(it) }
+        m.act(firstWolf, 5)
+        m.act(3, 6)                                   // doctor protege a 6
+        val copy = match()
+        copy.restore(m.alive.toList(), m.night, m.doctorLast, m.doctorSelfUsed, m.pendingHunter, m.winner, m.log.toList())
+        copy.restoreNight(m.nightProposals(), m.nightProtect(), m.nightActed())
+        assertTrue(copy.hasActed(firstWolf))
+        assertTrue(runCatching { copy.act(firstWolf, 6) }.isFailure)
+        copy.nightOrder().filter { !copy.hasActed(it) }.forEach { p ->
+            copy.act(p, if (copy.actionFor(p) == Action.ATACAR) 6 else copy.targetsFor(p).first())
+        }
+        val d = copy.resolveDawn()
+        // Lobos propusieron 5 y 6 (empate al azar); si salió 6, el doctor lo salvó
+        assertTrue(d.deaths == listOf(5) || d.saved)
+    }
 }
