@@ -31,6 +31,7 @@ class FlowTest {
             .putString("players", "Ana\nBeto\nCaro\nDani\nEli\nFer")
             .putInt("lobos", 2).putBoolean("vidente", true).putBoolean("doctor", true).putBoolean("cazador", true)
             .putInt("turnSeconds", 1)   // turnos cortos para la prueba
+            .putBoolean("accusation", false).putBoolean("sound", false)
             .commit()
     }
 
@@ -62,12 +63,32 @@ class FlowTest {
         rule.waitForIdle()
         when {
             hasPart("Soy ") -> rule.onNode(hasText("Soy ", substring = true)).performClick()
-            has("Confirmar") -> { clickFirstTarget(); rule.onNodeWithText("Confirmar").performClick() }
+            has("Confirmar") -> {
+                clickFirstTarget()
+                if (rule.onAllNodes(tagStarts("frame-")).fetchSemanticsNodes().isNotEmpty()) {
+                    rule.onAllNodes(tagStarts("frame-")).onFirst().performClick()
+                }
+                rule.onNodeWithText("Confirmar").performClick()
+            }
             hasPart("Espera") || has("Listo, pasar") -> {
                 rule.waitUntil(6000) { has("Listo, pasar") }
                 rule.onNodeWithText("Listo, pasar").performClick()
             }
             has("Disparar") -> { clickFirstTarget(); rule.onNodeWithText("Disparar").performClick() }
+            has("Escuchar defensas") -> {
+                rule.onAllNodes(tagStarts("acc-"))[0].performClick()
+                rule.onAllNodes(tagStarts("acc-"))[1].performClick()
+                rule.onNodeWithText("Escuchar defensas").performClick()
+            }
+            hasPart("Todos señalen") -> rule.waitUntil(6000) { has("Escuchar defensas") }
+            has("Siguiente defensa") -> rule.onNodeWithText("Siguiente defensa").performClick()
+            has("Ir a la votación") -> rule.onNodeWithText("Ir a la votación").performClick()
+            has("Empezar la acusación") -> rule.onNodeWithText("Empezar la acusación").performClick()
+            has("Guardar votos") -> {
+                rule.onAllNodes(tagStarts("voter-"))[0].performClick()
+                rule.onAllNodes(hasText("Nadie")).onFirst().performClick()
+                rule.onNodeWithText("Guardar votos").performClick()
+            }
             has("Ir a votar") -> rule.onNodeWithText("Ir a votar").performClick()
             has("¿A quién elimina el pueblo?") && voteFirst -> { clickFirstTarget(); rule.onNodeWithText("Eliminar").performClick() }
             has("Continuar") -> rule.onNodeWithText("Continuar").performClick()
@@ -119,6 +140,29 @@ class FlowTest {
             rule.onNodeWithText("¿Salir de la partida?").assertExists()
             rule.onNodeWithText("Seguir jugando").performClick()
             assertTrue(hasPart("Soy "))
+        }
+    }
+
+    @Test fun modoHistoriaConAcusacionYRegistroDeVotos() {
+        InstrumentationRegistry.getInstrumentation().targetContext
+            .getSharedPreferences("lobo", Context.MODE_PRIVATE).edit()
+            .putBoolean("story", true).putInt("witnessEvery", 1).putBoolean("corruption", true)
+            .putBoolean("anonSuspicions", true).putBoolean("accusation", true).putBoolean("voteLog", true)
+            .commit()
+        ActivityScenario.launch(MainActivity::class.java).use {
+            startAndReveal()
+            var steps = 0
+            var sawScene = false
+            var sawAccusation = false
+            while (!has("Otra partida")) {
+                if (hasPart("Escena del crimen")) sawScene = true
+                if (hasPart("Todos señalen") || has("Escuchar defensas")) sawAccusation = true
+                assertTrue("pantalla desconocida", step())
+                assertTrue("la partida no termina", ++steps < 500)
+            }
+            assertTrue("no apareció la escena del crimen", sawScene)
+            assertTrue("no hubo ronda de acusación", sawAccusation || hasPart("Escena:"))
+            rule.onNodeWithText("Así fue la partida", substring = true, ignoreCase = true).assertExists()
         }
     }
 }

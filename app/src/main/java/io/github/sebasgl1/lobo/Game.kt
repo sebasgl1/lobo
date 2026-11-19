@@ -23,6 +23,12 @@ sealed class Screen {
     data object Vote : Screen()
     data object TieSelect : Screen()
     data class TieVote(val candidates: List<Int>) : Screen()
+    /** Ronda de acusación: todos señalan y se escogen los dos más señalados. */
+    data object Accuse : Screen()
+    data class Defense(val index: Int, val candidates: List<Int>) : Screen()
+    data class FinalVote(val candidates: List<Int>) : Screen()
+    /** Registro opcional de quién votó por quién. */
+    data class VoteLog(val eliminated: Int, val voters: List<Int>) : Screen()
     /** player = -1: el pueblo no eliminó a nadie. */
     data class Eliminated(val player: Int, val cause: Cause?) : Screen()
     data object End : Screen()
@@ -49,6 +55,13 @@ class Game(context: Context) {
     var quietFirstNight by mutableStateOf(prefs.getBoolean("quiet", false))
     var turnSeconds by mutableIntStateOf(prefs.getInt("turnSeconds", 8))
     var bigText by mutableStateOf(prefs.getBoolean("bigText", false))
+    var story by mutableStateOf(prefs.getBoolean("story", false))
+    var witnessEvery by mutableIntStateOf(prefs.getInt("witnessEvery", 1))
+    var corruption by mutableStateOf(prefs.getBoolean("corruption", false))
+    var accusation by mutableStateOf(prefs.getBoolean("accusation", true))
+    var anonSuspicions by mutableStateOf(prefs.getBoolean("anonSuspicions", false))
+    var voteLog by mutableStateOf(prefs.getBoolean("voteLog", false))
+    var sound by mutableStateOf(prefs.getBoolean("sound", true))
 
     // Partida en curso
     var match by mutableStateOf<Match?>(null)
@@ -105,10 +118,16 @@ class Game(context: Context) {
             .putInt("lobos", lobos).putBoolean("vidente", vidente).putBoolean("doctor", doctor).putBoolean("cazador", cazador)
             .putBoolean("reveal", revealOnDeath).putBoolean("quiet", quietFirstNight)
             .putInt("turnSeconds", turnSeconds).putBoolean("bigText", bigText)
+            .putBoolean("story", story).putInt("witnessEvery", witnessEvery).putBoolean("corruption", corruption)
+            .putBoolean("accusation", accusation).putBoolean("anonSuspicions", anonSuspicions).putBoolean("voteLog", voteLog)
+            .putBoolean("sound", sound)
             .apply()
     }
 
-    private fun options() = Options(revealOnDeath = revealOnDeath, quietFirstNight = quietFirstNight)
+    private fun options() = Options(
+        revealOnDeath = revealOnDeath, quietFirstNight = quietFirstNight,
+        story = story, witnessEvery = witnessEvery, corruption = corruption,
+    )
 
     // ---------- Flujo de la partida ----------
 
@@ -141,9 +160,12 @@ class Game(context: Context) {
     }
 
     /** Registra la acción del turno y devuelve lo que vio la Vidente, si aplica. */
-    fun act(turn: Int, target: Int): SeerResult? {
+    fun act(turn: Int, target: Int, frame: Int = -1, corrupt: Boolean = false): SeerResult? {
         val m = match ?: return null
-        val r = m.act(order[turn], target)
+        val p = order[turn]
+        val r = m.act(p, target)
+        if (frame >= 0) m.frame(p, frame)
+        if (corrupt && m.canCorrupt) m.requestCorruption(p)
         version++
         return r
     }
@@ -173,9 +195,28 @@ class Game(context: Context) {
 
     fun vote(target: Int?) {
         val m = match ?: return
+        val voters = m.aliveList()
         m.vote(target)
         stage = Stage.AFTER_VOTE
-        go(Screen.Eliminated(target ?: -1, if (target == null) null else Cause.VOTO))
+        if (voteLog && voters.size > 1) go(Screen.VoteLog(target ?: -1, voters))
+        else go(Screen.Eliminated(target ?: -1, if (target == null) null else Cause.VOTO))
+    }
+
+    fun saveVotes(votes: Map<Int, Int>, eliminated: Int) {
+        val m = match ?: return
+        votes.forEach { (v, t) -> m.recordVote(v, t) }
+        go(Screen.Eliminated(eliminated, if (eliminated < 0) null else Cause.VOTO))
+    }
+
+    fun startAccusation() = go(Screen.Accuse)
+
+    fun accused(candidates: List<Int>) {
+        if (candidates.size == 1) go(Screen.FinalVote(candidates)) else go(Screen.Defense(0, candidates))
+    }
+
+    fun nextDefense(s: Screen.Defense) {
+        timerEnd = 0L
+        if (s.index + 1 < s.candidates.size) go(Screen.Defense(s.index + 1, s.candidates)) else go(Screen.FinalVote(s.candidates))
     }
 
     fun hunterShoot(target: Int) {
@@ -219,6 +260,71 @@ class Game(context: Context) {
         return lines[(m.night + deaths.first()) % lines.size]
     }
 
+    // ---------- Modo Historia ----------
+
+    private val places = listOf("junto al granero", "cerca del pozo", "en la plaza", "a la orilla del río",
+        "detrás de la iglesia", "en el camino del molino", "junto al corral", "a la entrada del bosque")
+    private val activities = listOf("recogiendo leña", "buscando velas", "cerrando el corral", "paseando al perro",
+        "sacando agua del pozo", "llevando pan a su casa", "arreglando una cerca", "buscando a su gato",
+        "volviendo de la taberna", "recogiendo hierbas", "apagando una fogata", "guardando las herramientas")
+
+    fun lastScene(): Event.Scene? = match?.log?.lastOrNull { it is Event.Scene } as? Event.Scene
+
+    /** Narración de la escena del crimen; usa la noche como semilla para que no cambie al girar la pantalla. */
+    fun sceneLines(): Pair<String, List<String>>? {
+        val m = match ?: return null
+        val sc = lastScene() ?: return null
+        val r = java.util.Random(m.night * 7919L + sc.suspects.sum())
+        val place = places[r.nextInt(places.size)]
+        val head = when {
+            sc.victim >= 0 && !sc.saved -> "Encontraron a ${m.names[sc.victim]} $place."
+            sc.victim >= 0 -> "Hubo un ataque $place, pero alguien salvó a la víctima."
+            else -> "Anoche hubo ruidos extraños $place."
+        }
+        val acts = activities.shuffled(r)
+        val who = sc.suspects.mapIndexed { i, p -> "${m.names[p]}, ${acts[i]}" }
+        return "$head Esa noche estuvieron cerca:" to who
+    }
+
+    fun witnessText(p: Int): String? {
+        val m = match ?: return null
+        val (a, b) = m.witnessFor(p) ?: return null
+        return "Anoche viste a ${m.names[a]} y a ${m.names[b]} rondando por el pueblo. Uno de los dos es lobo."
+    }
+
+    /** Conteo anónimo de sospechas de la última noche (incluye las pistas falsas de los lobos). */
+    fun morningSuspicions(): List<Pair<String, Int>> {
+        val m = match ?: return emptyList()
+        val start = m.log.indexOfLast { it is Event.Night }
+        if (start < 0) return emptyList()
+        val seg = m.log.subList(start, m.log.size)
+        val targets = seg.filterIsInstance<Event.Suspect>().filter { !m.isWolf(it.player) }.map { it.target } +
+            seg.filterIsInstance<Event.FrameVote>().map { it.target }
+        return targets.groupingBy { it }.eachCount().entries.filter { m.alive[it.key] }
+            .sortedByDescending { it.value }.map { m.names[it.key] to it.value }
+    }
+
+    /** Votos registrados en el día anterior. */
+    fun yesterdayVotes(): List<String> {
+        val m = match ?: return emptyList()
+        val lastDay = m.log.indexOfLast { it is Event.Day }
+        val prevDay = m.log.subList(0, maxOf(0, lastDay)).indexOfLast { it is Event.Day }
+        if (prevDay < 0) return emptyList()
+        return m.log.subList(prevDay, lastDay).filterIsInstance<Event.VoteCast>().map { v ->
+            val wolfTag = if (m.options.revealOnDeath && !m.alive[v.target] && m.isWolf(v.target)) " 🐺" else ""
+            "${m.names[v.voter]} → ${if (v.target < 0) "nadie" else m.names[v.target] + wolfTag}"
+        }
+    }
+
+    val tips = listOf(
+        "En la escena siempre hay al menos un lobo… y un inocente incriminado por ellos.",
+        "Si alguien dice que fue testigo, cruza su par con la escena: ¿quién aparece en ambos?",
+        "Un lobo puede decir que fue testigo e inventar el par. ¿Le creen?",
+        "Si \"nadie murió\", el Doctor acertó. ¿A quién protegió y por qué?",
+        "Fíjense a quién matan los lobos: suelen ir por quien los está acusando.",
+        "Quien nunca acusa a nadie también es sospechoso.",
+    )
+
     fun timeline(): List<String> {
         val m = match ?: return emptyList()
         fun n(p: Int) = m.names[p]
@@ -238,6 +344,11 @@ class Game(context: Context) {
                 is Event.Day -> "☀️ Día ${e.n}"
                 is Event.NobodyVoted -> "⚖️ El pueblo no eliminó a nadie"
                 is Event.Win -> "🏆 Ganan ${e.team.label.lowercase()}"
+                is Event.Scene -> if (e.suspects.isEmpty()) null else "🔎 Escena: " + e.suspects.joinToString(", ") { n(it) }
+                is Event.Witness -> "🕯️ ${n(e.witness)} fue testigo: vio a ${n(e.a)} y ${n(e.b)}" + if (e.corrupted) " (comprado por los lobos)" else ""
+                is Event.CorruptionUsed -> "💰 Los lobos compraron al testigo de la noche siguiente"
+                is Event.FrameVote -> "🎭 ${n(e.wolf)} quiso incriminar a ${n(e.target)}"
+                is Event.VoteCast -> null
                 is Event.Propose, is Event.Suspect -> null
             }
         }
@@ -308,6 +419,9 @@ class Game(context: Context) {
         o.put("night", m.night).put("docLast", m.doctorLast).put("docSelf", m.doctorSelfUsed)
         o.put("hunter", m.pendingHunter).put("winner", m.winner?.name ?: "")
         o.put("reveal", m.options.revealOnDeath).put("quiet", m.options.quietFirstNight)
+        o.put("story", m.options.story).put("witnessEvery", m.options.witnessEvery).put("corruption", m.options.corruption)
+        o.put("witness", m.witness).put("pairA", m.witnessPair?.first ?: -1).put("pairB", m.witnessPair?.second ?: -1)
+        o.put("corruptNext", m.corruptNext).put("corruptUsed", m.corruptionUsed)
         o.put("stage", stage.name)
         o.put("order", JSONArray().also { a -> order.forEach { a.put(it) } })
         o.put("log", JSONArray().also { a -> m.log.forEach { a.put(eventJson(it)) } })
@@ -318,12 +432,17 @@ class Game(context: Context) {
                 val pr = JSONObject()
                 m.nightProposals().forEach { (k, v) -> pr.put(k.toString(), v) }
                 o.put("proposals", pr)
+                val fr = JSONObject()
+                m.nightFrames().forEach { (k, v) -> fr.put(k.toString(), v) }
+                o.put("frames", fr)
                 o.put("acted", JSONArray().also { a -> m.nightActed().forEach { a.put(it) } })
             }
             is Screen.NightAct -> return checkpoint
             is Screen.Dawn -> o.put("screen", "dawn").put("deaths", JSONArray().also { a -> s.deaths.forEach { a.put(it) } }).put("saved", s.saved)
             is Screen.Hunter -> o.put("screen", "hunter")
-            is Screen.Day, is Screen.Vote, is Screen.TieSelect, is Screen.TieVote -> o.put("screen", "day")
+            is Screen.Day, is Screen.Vote, is Screen.TieSelect, is Screen.TieVote,
+            is Screen.Accuse, is Screen.Defense, is Screen.FinalVote -> o.put("screen", "day")
+            is Screen.VoteLog -> o.put("screen", "eliminated").put("player", s.eliminated).put("cause", if (s.eliminated < 0) "" else Cause.VOTO.name)
             is Screen.Eliminated -> o.put("screen", "eliminated").put("player", s.player).put("cause", s.cause?.name ?: "")
             is Screen.End -> o.put("screen", "end")
             else -> return null
@@ -354,8 +473,15 @@ class Game(context: Context) {
             val al = o.getJSONArray("alive").let { a -> (0 until a.length()).map { a.getBoolean(it) } }
             val ev = o.getJSONArray("log").let { a -> (0 until a.length()).mapNotNull { eventFrom(a.getJSONObject(it)) } }
             val win = o.getString("winner").let { if (it.isEmpty()) null else Team.valueOf(it) }
-            val m = Match(nm, rl, Options(revealOnDeath = o.getBoolean("reveal"), quietFirstNight = o.getBoolean("quiet")), rng)
+            val opts = Options(
+                revealOnDeath = o.getBoolean("reveal"), quietFirstNight = o.getBoolean("quiet"),
+                story = o.optBoolean("story", false), witnessEvery = o.optInt("witnessEvery", 1), corruption = o.optBoolean("corruption", false),
+            )
+            val m = Match(nm, rl, opts, rng)
             m.restore(al, o.getInt("night"), o.getInt("docLast"), o.getBoolean("docSelf"), o.getInt("hunter"), win, ev)
+            val pa = o.optInt("pairA", -1); val pb = o.optInt("pairB", -1)
+            m.restoreStory(o.optInt("witness", -1), if (pa >= 0 && pb >= 0) pa to pb else null,
+                o.optBoolean("corruptNext", false), o.optBoolean("corruptUsed", false))
             match = m
             stage = Stage.valueOf(o.getString("stage"))
             order = o.getJSONArray("order").let { a -> (0 until a.length()).map { a.getInt(it) } }
@@ -365,7 +491,10 @@ class Game(context: Context) {
                 if (pr != null) for (k in pr.keys()) props[k.toInt()] = pr.getInt(k)
                 val ac = o.optJSONArray("acted")
                 val done = if (ac == null) emptySet() else (0 until ac.length()).map { ac.getInt(it) }.toSet()
-                m.restoreNight(props, o.optInt("protect", -1), done)
+                val fr = o.optJSONObject("frames")
+                val frames = mutableMapOf<Int, Int>()
+                if (fr != null) for (k in fr.keys()) frames[k.toInt()] = fr.getInt(k)
+                m.restoreNight(props, o.optInt("protect", -1), done, frames)
             }
             screen = when (o.getString("screen")) {
                 "reveal" -> Screen.Reveal(0)
@@ -399,6 +528,12 @@ class Game(context: Context) {
             is Event.Day -> o.put("k", "day").put("n", e.n)
             is Event.NobodyVoted -> o.put("k", "nobody")
             is Event.Win -> o.put("k", "win").put("team", e.team.name)
+            is Event.FrameVote -> o.put("k", "frame").put("a", e.wolf).put("b", e.target)
+            is Event.Scene -> o.put("k", "scene").put("b", e.victim).put("c", e.saved)
+                .put("s", JSONArray().also { a -> e.suspects.forEach { a.put(it) } })
+            is Event.Witness -> o.put("k", "wit").put("a", e.witness).put("b", e.a).put("d", e.b).put("c", e.corrupted)
+            is Event.CorruptionUsed -> o.put("k", "corrupt")
+            is Event.VoteCast -> o.put("k", "votecast").put("a", e.voter).put("b", e.target)
         }
         return o
     }
@@ -415,6 +550,11 @@ class Game(context: Context) {
         "day" -> Event.Day(o.getInt("n"))
         "nobody" -> Event.NobodyVoted
         "win" -> Event.Win(Team.valueOf(o.getString("team")))
+        "frame" -> Event.FrameVote(o.getInt("a"), o.getInt("b"))
+        "scene" -> Event.Scene(o.getInt("b"), o.getBoolean("c"), o.getJSONArray("s").let { a -> (0 until a.length()).map { a.getInt(it) } })
+        "wit" -> Event.Witness(o.getInt("a"), o.getInt("b"), o.getInt("d"), o.getBoolean("c"))
+        "corrupt" -> Event.CorruptionUsed
+        "votecast" -> Event.VoteCast(o.getInt("a"), o.getInt("b"))
         else -> null
     }
 

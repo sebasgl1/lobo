@@ -26,6 +26,12 @@ data class Options(
     val quietFirstNight: Boolean = false,
     val seerExact: Boolean = false,
     val doctorSelfOnce: Boolean = true,
+    /** Modo Historia: escena del crimen, incriminación y testigos. */
+    val story: Boolean = false,
+    /** Cada cuántas noches hay testigo en Modo Historia: 0 = nunca, 1 = cada noche, 2 = noche por medio. */
+    val witnessEvery: Int = 1,
+    /** Los lobos pueden comprar al testigo de la noche siguiente, una vez por partida. */
+    val corruption: Boolean = false,
 )
 
 /** Todo lo que pasa en la partida, en orden. De aquí salen la línea de tiempo y el guardado. */
@@ -41,11 +47,17 @@ sealed class Event {
     data class Day(val n: Int) : Event()
     data object NobodyVoted : Event()
     data class Win(val team: Team) : Event()
+    // Modo Historia
+    data class FrameVote(val wolf: Int, val target: Int) : Event()
+    data class Scene(val victim: Int, val saved: Boolean, val suspects: List<Int>) : Event()
+    data class Witness(val witness: Int, val a: Int, val b: Int, val corrupted: Boolean) : Event()
+    data object CorruptionUsed : Event()
+    data class VoteCast(val voter: Int, val target: Int) : Event()
 }
 
 data class SeerResult(val target: Int, val isWolf: Boolean, val role: Role)
 
-data class DawnResult(val deaths: List<Int>, val saved: Boolean)
+data class DawnResult(val deaths: List<Int>, val saved: Boolean, val scene: List<Int> = emptyList())
 
 /** Reglas puras, sin nada de Android, para poder probarlas en cada compilación. */
 object Rules {
@@ -131,7 +143,18 @@ class Match(
     var winner: Team? = null
         private set
 
+    // Modo Historia
+    var witness = -1
+        private set
+    var witnessPair: Pair<Int, Int>? = null
+        private set
+    var corruptNext = false
+        private set
+    var corruptionUsed = false
+        private set
+
     // Acciones de la noche en curso
+    private val frames = LinkedHashMap<Int, Int>()
     private val proposals = LinkedHashMap<Int, Int>()
     private var protectTarget = -1
     private val acted = mutableSetOf<Int>()
@@ -147,9 +170,57 @@ class Match(
     fun startNight() {
         night++
         proposals.clear()
+        frames.clear()
         protectTarget = -1
         acted.clear()
         log.add(Event.Night(night))
+        chooseWitness()
+    }
+
+    /** Modo Historia: un aldeano vivo ve a dos personas; una es lobo (salvo que los lobos lo hayan comprado). */
+    private fun chooseWitness() {
+        witness = -1
+        witnessPair = null
+        if (!options.story || options.witnessEvery <= 0 || (night - 1) % options.witnessEvery != 0) return
+        val villagers = aliveList().filter { roles[it] == Role.ALDEANO }
+        if (villagers.isEmpty()) return
+        val w = villagers[rng.nextInt(villagers.size)]
+        val innocents = aliveList().filter { !isWolf(it) && it != w }
+        val wolves = aliveList().filter { isWolf(it) }
+        val corrupted = corruptNext && innocents.size >= 2
+        val pair: List<Int> = if (corrupted) {
+            innocents.shuffled(rng).take(2)
+        } else {
+            if (wolves.isEmpty() || innocents.isEmpty()) return
+            listOf(wolves[rng.nextInt(wolves.size)], innocents[rng.nextInt(innocents.size)]).shuffled(rng)
+        }
+        if (corrupted) corruptNext = false
+        witness = w
+        witnessPair = pair[0] to pair[1]
+        log.add(Event.Witness(w, pair[0], pair[1], corrupted))
+    }
+
+    /** Lo que vio el testigo, solo para él. */
+    fun witnessFor(p: Int): Pair<Int, Int>? = if (p == witness) witnessPair else null
+
+    /** Modo Historia: los lobos escogen a un inocente para dejar pistas falsas en la escena. */
+    fun frameTargets(p: Int): List<Int> = if (options.story && isWolf(p)) aliveList().filter { !isWolf(it) } else emptyList()
+
+    fun frame(p: Int, target: Int) {
+        require(options.story && isWolf(p) && alive[p]) { "Solo los lobos incriminan en Modo Historia" }
+        require(target in frameTargets(p)) { "Objetivo no permitido" }
+        frames[p] = target
+        log.add(Event.FrameVote(p, target))
+    }
+
+    val canCorrupt get() = options.story && options.corruption && !corruptionUsed
+
+    /** Los lobos compran al testigo de la noche siguiente (una vez por partida). */
+    fun requestCorruption(p: Int) {
+        require(isWolf(p) && canCorrupt) { "No se puede comprar al testigo" }
+        corruptionUsed = true
+        corruptNext = true
+        log.add(Event.CorruptionUsed)
     }
 
     val isQuietNight get() = options.quietFirstNight && night == 1
@@ -234,9 +305,34 @@ class Match(
                 deaths.add(target)
             }
         }
+        val scene = if (options.story) buildScene(target, saved, deaths) else emptyList()
         log.add(Event.Day(night))
         checkWinner()
-        return DawnResult(deaths, saved)
+        return DawnResult(deaths, saved, scene)
+    }
+
+    /** Escena del crimen: un lobo vivo, el inocente incriminado y alguien más al azar. */
+    private fun buildScene(target: Int, saved: Boolean, deaths: List<Int>): List<Int> {
+        val wolves = aliveList().filter { isWolf(it) }
+        if (wolves.isEmpty()) return emptyList()
+        val wolf = wolves[rng.nextInt(wolves.size)]
+        val frameOptions = frames.values.filter { alive[it] && !isWolf(it) && it !in deaths }
+        val framed = if (frameOptions.isNotEmpty()) {
+            val counts = frameOptions.groupingBy { it }.eachCount()
+            val max = counts.values.max()
+            val top = counts.filter { it.value == max }.keys.toList()
+            top[rng.nextInt(top.size)]
+        } else {
+            val inn = aliveList().filter { !isWolf(it) }
+            if (inn.isEmpty()) -1 else inn[rng.nextInt(inn.size)]
+        }
+        val chosen = mutableListOf(wolf)
+        if (framed >= 0) chosen.add(framed)
+        val rest = aliveList().filter { it !in chosen }
+        if (rest.isNotEmpty()) chosen.add(rest[rng.nextInt(rest.size)])
+        val suspects = chosen.shuffled(rng)
+        log.add(Event.Scene(target, saved, suspects))
+        return suspects
     }
 
     /** Eliminación por votación del pueblo; null = no eliminar a nadie. */
@@ -283,17 +379,27 @@ class Match(
 
     /** Avance de la noche en curso (para guardarla si Android cierra la app a mitad de la ronda). */
     fun nightProposals(): Map<Int, Int> = proposals.toMap()
+    fun nightFrames(): Map<Int, Int> = frames.toMap()
     fun nightProtect(): Int = protectTarget
     fun nightActed(): Set<Int> = acted.toSet()
 
     /** Restaura el avance de la noche: quien ya jugó no vuelve a jugar ni puede cambiar su elección. */
-    fun restoreNight(props: Map<Int, Int>, protect: Int, done: Set<Int>) {
+    fun restoreNight(props: Map<Int, Int>, protect: Int, done: Set<Int>, frameProps: Map<Int, Int> = emptyMap()) {
         proposals.clear(); proposals.putAll(props)
+        frames.clear(); frames.putAll(frameProps)
         protectTarget = protect
         acted.clear(); acted.addAll(done)
     }
 
     /** Restaura una partida guardada reproduciendo sus datos básicos. */
+    /** Datos del Modo Historia al restaurar una partida guardada. */
+    fun restoreStory(w: Int, pair: Pair<Int, Int>?, corruptN: Boolean, corruptUsed: Boolean) {
+        witness = w; witnessPair = pair; corruptNext = corruptN; corruptionUsed = corruptUsed
+    }
+
+    /** Registra quién votó por quién en el día (opcional). */
+    fun recordVote(voter: Int, target: Int) { log.add(Event.VoteCast(voter, target)) }
+
     fun restore(aliveNow: List<Boolean>, nightNow: Int, docLast: Int, docSelf: Boolean, hunter: Int, win: Team?, events: List<Event>) {
         aliveNow.forEachIndexed { i, v -> alive[i] = v }
         night = nightNow
