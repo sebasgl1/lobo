@@ -454,7 +454,8 @@ class Game(context: Context) {
         val prevDay = m.log.subList(0, maxOf(0, lastDay)).indexOfLast { it is Event.Day }
         if (prevDay < 0) return emptyList()
         return m.log.subList(prevDay, lastDay).filterIsInstance<Event.VoteCast>().map { v ->
-            val wolfTag = if (m.options.revealOnDeath && !m.alive[v.target] && m.isWolf(v.target)) " 🐺" else ""
+            // target = -1 cuando votó por nadie
+            val wolfTag = if (v.target >= 0 && m.options.revealOnDeath && !m.alive[v.target] && m.isWolf(v.target)) " 🐺" else ""
             "${m.names[v.voter]} → ${if (v.target < 0) "nadie" else m.names[v.target] + wolfTag}"
         }
     }
