@@ -23,6 +23,7 @@ fun roleColor(r: Role) = when (r) {
     Role.VIDENTE -> SeerColor
     Role.DOCTOR -> DoctorColor
     Role.CAZADOR -> HunterColor
+    Role.TESTIGO -> Gold
 }
 
 private val Scheme = darkColorScheme(

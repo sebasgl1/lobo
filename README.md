@@ -8,6 +8,7 @@ El juego de Lobo (Mafia / Werewolf) en español, offline y en un solo celular. L
 - Votación con desempate, cazador que se lleva a alguien, revelar o no el rol al morir, primera noche tranquila
 - Línea de tiempo y "lo que pensaba el pueblo" al final, estadísticas por jugador
 - **Modo Historia** (opcional): escena del crimen con 3 sospechosos (al menos uno es lobo y otro es un inocente incriminado por los lobos), testigos que ven a dos personas (una es lobo), compra del testigo y sospechas anónimas
+- **Modo narrador** (con Clásico o Historia): el celular queda en la mesa y una voz grave y pausada narra la noche; todos cierran los ojos y solo el rol llamado toca su elección. Los roles muertos se siguen llamando con turnos simulados de duración parecida. En Modo Historia el testigo pasa a ser un rol fijo (🕯️ Testigo). Usa la voz de Android en español (sin internet si está descargada)
 - Ronda de acusación (señalar 3-2-1 + defensas de 30 s) y registro opcional de votos
 - Sonidos de ambientación con botón para silenciar: viento de noche, mercado de día, hoguera, aullido, "¡Está vivo!", campanas. Los sonidos están en `app/src/main/res/raw/` (generados por síntesis); se pueden cambiar por grabaciones reales con el mismo nombre
 - La partida se guarda si Android cierra la app

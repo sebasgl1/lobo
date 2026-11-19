@@ -97,6 +97,11 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.staticCompositionLocalOf
+import android.content.Intent
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private lateinit var game: Game
@@ -128,16 +133,19 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Sonidos y voz del narrador, para las pantallas que los necesitan. */
+val LocalFx = staticCompositionLocalOf<SoundFx?> { null }
+
 /** Sonido de fondo según la etapa del juego. */
 fun ambienceFor(s: Screen): Int = when (s) {
-    is Screen.NightPass, is Screen.NightAct -> R.raw.noche
+    is Screen.NightPass, is Screen.NightAct, is Screen.NarratorNight -> R.raw.noche
     is Screen.Dawn, Screen.Day, Screen.Vote, Screen.TieSelect, is Screen.TieVote, Screen.Accuse,
     is Screen.Defense, is Screen.FinalVote, is Screen.VoteLog, is Screen.Eliminated, Screen.Hunter -> R.raw.mercado
     else -> R.raw.hoguera
 }
 
 /** Pantallas donde no va el botón flotante de sonido: las secretas (para no tapar nada) y Configuración, que tiene su propio interruptor. */
-fun isPrivate(s: Screen) = s is Screen.Reveal || s is Screen.NightPass || s is Screen.NightAct || s is Screen.Setup
+fun isPrivate(s: Screen) = s is Screen.Reveal || s is Screen.NightPass || s is Screen.NightAct || s is Screen.Setup || s is Screen.NarratorNight
 
 /** Durante la partida: oculta los botones de Android y mantiene la pantalla encendida. */
 @Composable
@@ -200,6 +208,19 @@ fun App(game: Game, fx: SoundFx) {
             Screen.End -> fx.play(if (m?.winner == Team.LOBOS) R.raw.manada else R.raw.campanas)
             else -> {}
         }
+        // Modo narrador: la voz lee en voz alta lo que pasó (después del efecto de sonido)
+        val text = game.narration(s)
+        if (text != null) {
+            delay(
+                when {
+                    game.fastNarrator -> 0L
+                    s is Screen.Dawn && s.saved && s.deaths.isEmpty() -> 3300L
+                    s is Screen.Dawn || s is Screen.Eliminated || s is Screen.End -> 2200L
+                    else -> 600L
+                }
+            )
+            fx.say(text, game.fastNarrator)
+        }
     }
 
     BackHandler(enabled = s !is Screen.Home) {
@@ -210,7 +231,10 @@ fun App(game: Game, fx: SoundFx) {
     }
 
     val density = LocalDensity.current
-    CompositionLocalProvider(LocalDensity provides Density(density.density, density.fontScale * if (game.bigText) 1.2f else 1f)) {
+    CompositionLocalProvider(
+        LocalDensity provides Density(density.density, density.fontScale * if (game.bigText) 1.2f else 1f),
+        LocalFx provides fx,
+    ) {
         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).windowInsetsPadding(StableInsets)) {
             AnimatedContent(targetState = s, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "screen") { screen ->
                 when (screen) {
@@ -232,6 +256,8 @@ fun App(game: Game, fx: SoundFx) {
                     is Screen.Defense -> DefenseScreen(game, screen)
                     is Screen.FinalVote -> FinalVoteScreen(game, screen.candidates)
                     is Screen.VoteLog -> VoteLogScreen(game, screen)
+                    Screen.NarratorReady -> NarratorReadyScreen(game)
+                    is Screen.NarratorNight -> NarratorNightScreen(game, screen.step)
                 }
             }
             if (!isPrivate(s)) {
@@ -352,6 +378,7 @@ fun roleDescription(r: Role) = when (r) {
     Role.VIDENTE -> "Cada noche descubres si alguien es lobo o no."
     Role.DOCTOR -> "Cada noche proteges a alguien. No puedes repetir dos noches seguidas."
     Role.CAZADOR -> "Si mueres, te llevas a alguien contigo."
+    Role.TESTIGO -> "Eres un aldeano que ve cosas: algunas noches el narrador te despierta y ves a dos personas. Una de ellas es lobo."
 }
 
 /** Al salir de una pantalla con campo de texto, cierra el teclado para que no aplaste la siguiente pantalla. */
@@ -400,6 +427,9 @@ fun HowToScreen(game: Game) {
             "🕵️ Cómo encontrar al lobo" to "Miren a quién matan los lobos (suelen ir por quien los acusa). Si nadie murió, el Doctor acertó. La Vidente sabe la verdad, pero si lo dice muy pronto la matan. Cuando cae un lobo, revisen quién lo defendió. Quien nunca acusa a nadie también es sospechoso.",
             "📖 Modo Historia: la escena" to "Cada mañana la app cuenta quiénes estuvieron cerca del crimen. De esos tres, al menos uno es lobo… pero los lobos escogen a un inocente para incriminarlo, que también aparece.",
             "🕯️ Modo Historia: el testigo" to "Algunas noches un aldeano es testigo: ve a dos personas y una de ellas es lobo. Solo él lo sabe. Puede contarlo o guardarlo, y un lobo puede mentir diciendo que también fue testigo.",
+            "🎙️ Modo narrador" to "El celular queda en el centro de la mesa y una voz hace de narrador, como en el juego de siempre: todos cierran los ojos y solo abre los ojos el rol que llaman, que toca su elección en la pantalla. Sirve con Clásico y con Historia.",
+            "🤫 Para no delatarse" to "El narrador llama a todos los roles aunque ya hayan muerto, y cada turno dura parecido. Mientras sea de noche, golpeen suavemente la mesa con los dedos para tapar los toques en la pantalla.",
+            "🕯️ Testigo (con narrador)" to "En Modo Historia con narrador, el testigo es un rol fijo: algunas noches el narrador lo despierta y le muestra a dos personas, una es lobo. Si dos dicen ser el Testigo, uno miente.",
             "🧩 Cruzar pistas" to "Comparen la escena con lo que dice el testigo y con la Vidente. Quien aparece en varias pistas es el más sospechoso, pero recuerden: hay un inocente incriminado y puede haber testigos falsos.",
         )
         rules.forEach { (t, d) ->
@@ -483,7 +513,8 @@ fun SetupScreen(game: Game) {
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text("🕯️ Testigos", fontSize = 16.sp)
-                            Muted("Un aldeano ve a dos personas; una es lobo")
+                            Muted(if (game.narrator) "Con narrador es un rol fijo: el Testigo ve a dos personas; una es lobo. Recomendado: noche por medio."
+                                else "Un aldeano ve a dos personas; una es lobo")
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 4.dp)) {
@@ -492,8 +523,23 @@ fun SetupScreen(game: Game) {
                         }
                     }
                     SwitchRow("💰 Los lobos pueden comprar un testigo", "Una vez por partida, el testigo de la noche siguiente ve a dos inocentes", game.corruption) { game.corruption = it; game.saveConfig() }
-                    SwitchRow("🗳️ Sospechas anónimas", "Cada mañana se muestra de quién sospecha el pueblo, sin nombres", game.anonSuspicions) { game.anonSuspicions = it; game.saveConfig() }
+                    if (!game.narrator) {
+                        SwitchRow("🗳️ Sospechas anónimas", "Cada mañana se muestra de quién sospecha el pueblo, sin nombres", game.anonSuspicions) { game.anonSuspicions = it; game.saveConfig() }
+                    }
                 }
+
+                SectionTitle("¿Cómo se juega la noche?")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = !game.narrator, onClick = { game.narrator = false; game.saveConfig() },
+                        label = { Text("📱 Pasando el celular") }, modifier = Modifier.testTag("night-pass"))
+                    FilterChip(selected = game.narrator, onClick = { game.narrator = true; game.saveConfig() },
+                        label = { Text("🎙️ Narrador") }, modifier = Modifier.testTag("night-narrator"))
+                }
+                Muted(
+                    if (game.narrator) "El celular queda en la mesa y una voz narra la noche: todos cierran los ojos y solo abre los ojos el rol que llaman."
+                    else "Cada uno recibe el celular en su turno y toca un nombre, así nadie sabe quién tiene poder.",
+                    Modifier.padding(top = 6.dp),
+                )
 
                 SectionTitle("Roles")
                 Stepper("🐺 Lobos", game.lobos, canDec = game.lobos > 1, canInc = Rules.setupError(n, game.setup().copy(lobos = game.lobos + 1)) == null) {
@@ -504,7 +550,10 @@ fun SetupScreen(game: Game) {
                 SwitchRow("🩺 Doctor", "Protege a alguien cada noche", game.doctor) { game.doctor = it; game.saveConfig() }
                 SwitchRow("🏹 Cazador", "Al morir se lleva a alguien", game.cazador) { game.cazador = it; game.saveConfig() }
                 Spacer(Modifier.height(6.dp))
-                Muted("👨‍🌾 Aldeanos: ${maxOf(0, game.aldeanos())}", Modifier.padding(start = 4.dp))
+                Muted("👨‍🌾 Aldeanos: ${maxOf(0, game.aldeanos())}" + if (game.testigoActive) " · 🕯️ Testigo: 1" else "", Modifier.padding(start = 4.dp))
+                if (game.narrator && game.story && game.witnessEvery > 0 && !game.testigoActive) {
+                    Muted("No alcanzan los aldeanos para el Testigo: esta partida será sin testigo.", Modifier.padding(start = 4.dp, top = 2.dp))
+                }
                 if (n >= Rules.MIN_PLAYERS) {
                     val r = game.recommended()
                     val extras = listOfNotNull(if (r.vidente) "Vidente" else null, if (r.doctor) "Doctor" else null, if (r.cazador) "Cazador" else null)
@@ -530,7 +579,7 @@ fun SetupScreen(game: Game) {
                 SwitchRow("Primera noche tranquila", "La primera noche nadie muere; solo actúa la Vidente", game.quietFirstNight) { game.quietFirstNight = it; game.saveConfig() }
                 SwitchRow("Ronda de acusación", "Antes de votar, todos señalan y los dos más señalados se defienden", game.accusation, tag = "accusation") { game.accusation = it; game.saveConfig() }
                 SwitchRow("Registro de votos", "Después de votar, anotar quién votó por quién", game.voteLog) { game.voteLog = it; game.saveConfig() }
-                Row(
+                if (!game.narrator) Row(
                     Modifier.fillMaxWidth().padding(vertical = 3.dp).background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -547,7 +596,7 @@ fun SetupScreen(game: Game) {
 
                 SectionTitle("Pantalla y sonido")
                 SwitchRow("Letra grande", "Textos más grandes en toda la app", game.bigText, tag = "big-text") { game.bigText = it; game.saveConfig() }
-                SwitchRow("Sonidos", "Viento de noche, mercado de día, aullidos y campanas", game.sound) { game.sound = it; game.saveConfig() }
+                SwitchRow("Sonidos", "Viento de noche, mercado de día, aullidos y campanas" + if (game.narrator) ". La voz del narrador suena siempre." else "", game.sound) { game.sound = it; game.saveConfig() }
 
                 @Suppress("UNUSED_VARIABLE") val refresh = game.version   // se vuelve a leer tras "Reiniciar estadísticas"
                 val stats = game.loadStats()
@@ -803,7 +852,13 @@ fun DawnScreen(game: Game, s: Screen.Dawn) {
                 SceneCard(head, who)
             }
             Spacer(Modifier.height(18.dp))
-            Muted("Alguien lea esto en voz alta para todos.", align = TextAlign.Center)
+            if (m.options.narrator) {
+                val fx = LocalFx.current
+                val scope = rememberCoroutineScope()
+                TextButton(onClick = { val t = game.narration(s); if (t != null) scope.launch { fx?.stopVoice(); fx?.say(t) } }) { Text("🔁 Repetir la narración") }
+            } else {
+                Muted("Alguien lea esto en voz alta para todos.", align = TextAlign.Center)
+            }
         }
     }
 }
@@ -905,8 +960,11 @@ fun AccuseScreen(game: Game) {
     val m = game.match ?: return
     var count by remember { mutableIntStateOf(3) }
     val chosen = remember { mutableStateListOf<Int>() }
+    val fx = LocalFx.current
+    val narr = m.options.narrator && !game.fastNarrator
     LaunchedEffect(Unit) {
-        while (count > 0) { delay(1000); count-- }
+        while (count > 0) { if (narr) fx?.sayNow("$count"); delay(1000); count-- }
+        if (narr) fx?.sayNow("¡Señalen!")
     }
     Page(bottom = {
         if (count == 0) {
@@ -938,9 +996,13 @@ fun DefenseScreen(game: Game, s: Screen.Defense) {
     val p = s.candidates[s.index]
     val ctx = LocalContext.current
     var left by remember(s.index) { mutableIntStateOf(30) }
+    val fx = LocalFx.current
+    val narr = m.options.narrator && !game.fastNarrator
     LaunchedEffect(s.index) {
+        if (narr) fx?.sayNow("${m.names[p]}, tienes treinta segundos para defenderte.")
         while (left > 0) { delay(1000); left-- }
         buzz(ctx)
+        if (narr) fx?.sayNow("Se acabó el tiempo.")
     }
     Page(scroll = false, bottom = {
         BigButton(if (s.index + 1 < s.candidates.size) "Siguiente defensa" else "Ir a la votación") { game.nextDefense(s) }
@@ -1200,5 +1262,200 @@ fun EndScreen(game: Game) {
             Text(line, fontSize = 15.sp, modifier = Modifier.padding(vertical = 3.dp),
                 fontWeight = if (line.startsWith("🌙") || line.startsWith("☀️")) FontWeight.Bold else FontWeight.Normal)
         }
+    }
+}
+
+// ---------- Modo narrador ----------
+
+@Composable
+fun NarratorReadyScreen(game: Game) {
+    val fx = LocalFx.current
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var voiceOk by remember { mutableStateOf(fx?.voiceReady == true) }
+    LaunchedEffect(Unit) {
+        repeat(20) { if (fx?.voiceReady == true) { voiceOk = true; return@LaunchedEffect }; delay(300) }
+    }
+    Page(bottom = { BigButton("Empezar la noche") { game.beginNight() } }) {
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("🎙️", fontSize = 64.sp)
+            Text("Modo narrador", fontSize = 30.sp, fontWeight = FontWeight.Black)
+        }
+        Spacer(Modifier.height(14.dp))
+        listOf(
+            "📱 Pongan el celular en el centro de la mesa, con la pantalla hacia arriba y el volumen alto.",
+            "😴 Cuando el narrador lo diga, todos cierran los ojos. Solo abre los ojos el rol que llamen.",
+            "👆 Si te llaman, toca tu elección en la pantalla sin hacer ruido y vuelve a cerrar los ojos.",
+            "🥁 Mientras sea de noche, todos golpeen suavemente la mesa con los dedos para tapar los toques.",
+        ).forEach { Text(it, fontSize = 17.sp, lineHeight = 24.sp, modifier = Modifier.padding(vertical = 6.dp)) }
+        Spacer(Modifier.height(8.dp))
+        if (!voiceOk) {
+            Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(14.dp)).padding(14.dp)) {
+                Text("Este celular no tiene voz en español", fontWeight = FontWeight.Bold, color = Gold)
+                Spacer(Modifier.height(4.dp))
+                Text("Instálala en Ajustes → Idioma → Salida de texto a voz (motor de Google, español). Sin voz, alguien tendrá que leer en voz alta lo que aparece en pantalla.",
+                    color = MaterialTheme.colorScheme.onSecondaryContainer, fontSize = 15.sp)
+                TextButton(onClick = {
+                    runCatching { ctx.startActivity(Intent("com.android.settings.TTS_SETTINGS").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                }) { Text("Abrir ajustes de voz", color = Gold) }
+            }
+        }
+        TextButton(onClick = { scope.launch { fx?.stopVoice(); fx?.say("Hola. Esta noche yo seré su narrador. Que nadie haga trampa.") } },
+            modifier = Modifier.fillMaxWidth()) { Text("🔊 Probar la voz") }
+    }
+}
+
+private enum class NPhase { TALK, ACT, DONE, WAIT }
+
+/**
+ * Un paso del guion de la noche: el narrador llama al rol, espera su elección (o simula el turno si el
+ * rol ya murió), le pide cerrar los ojos y sigue con el siguiente.
+ */
+@Composable
+fun NarratorNightScreen(game: Game, step: Int) {
+    val m = game.match ?: return
+    val st = game.steps.getOrNull(step) ?: return
+    val fx = LocalFx.current
+    var phase by remember(step) { mutableStateOf(NPhase.TALK) }
+    var caption by remember(step) { mutableStateOf(game.callOpen(st.call)) }
+    val done = remember(step) { CompletableDeferred<Unit>() }
+    LaunchedEffect(step) {
+        val fast = game.fastNarrator
+        suspend fun say(t: String) {
+            caption = t
+            if (fx != null) fx.say(t, fast) else delay(if (fast) 30L else 700L + t.length * 70L)
+        }
+        when (st.call) {
+            Call.INTRO -> { say(game.callOpen(st.call)); delay(if (fast) 30L else 2_500L) }
+            Call.AMANECER -> say(game.callOpen(st.call))
+            else -> {
+                say(game.callOpen(st.call))
+                val t0 = System.currentTimeMillis()
+                if (st.actor >= 0) {
+                    phase = NPhase.ACT
+                    done.await()
+                    val used = System.currentTimeMillis() - t0
+                    val min = game.minHold()
+                    phase = NPhase.DONE
+                    if (used < min) delay(min - used)
+                    game.noteRealDuration(maxOf(used, min))
+                } else {
+                    phase = NPhase.WAIT
+                    delay(game.fakeDuration())
+                }
+                phase = NPhase.TALK
+                say(game.callClose(st.call))
+                delay(game.pauseAfterClose())
+            }
+        }
+        game.narratorNext(step)
+    }
+
+    if (phase == NPhase.ACT) {
+        NarratorAct(game, m, st) { if (!done.isCompleted) done.complete(Unit) }
+        return
+    }
+    Page(scroll = false) {
+        Muted("🌙 Noche ${m.night}")
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+            if (phase == NPhase.DONE) {
+                Text("✓", fontSize = 64.sp, color = Moon)
+                Text("Listo. Cierra los ojos.", fontSize = 26.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            } else {
+                Text(if (st.call == Call.AMANECER) "🌅" else "🌙", fontSize = 72.sp)
+                Spacer(Modifier.height(18.dp))
+                Text(caption, fontSize = 22.sp, lineHeight = 30.sp, textAlign = TextAlign.Center, modifier = Modifier.testTag("narrator-caption"))
+                Spacer(Modifier.height(18.dp))
+                Muted(if (st.call == Call.AMANECER) "Ya pueden abrir los ojos" else "Ojos cerrados… solo abre los ojos el rol que llamen", align = TextAlign.Center)
+            }
+        }
+    }
+}
+
+/** Lo que ve el rol llamado mientras los demás tienen los ojos cerrados. */
+@Composable
+private fun NarratorAct(game: Game, m: Match, st: NarratorStep, onDone: () -> Unit) {
+    val actor = st.actor
+    var selected by remember(st) { mutableIntStateOf(-1) }
+    var frame by remember(st) { mutableIntStateOf(-1) }
+    var corrupt by remember(st) { mutableStateOf(false) }
+    var seer by remember(st) { mutableStateOf<SeerResult?>(null) }
+    when (st.call) {
+        Call.LOBOS -> {
+            val quiet = m.isQuietNight
+            val story = m.options.story
+            val targets = remember(st) { if (quiet) emptyList() else m.targetsFor(actor) }
+            val frameTargets = remember(st) { m.frameTargets(actor) }
+            val needsFrame = story && frameTargets.isNotEmpty()
+            val ready = (quiet || selected >= 0) && (!needsFrame || frame >= 0)
+            Page(bottom = {
+                BigButton(if (quiet && !needsFrame) "Listo" else "Confirmar", enabled = ready, color = WolfColor) {
+                    game.narratorWolves(selected, if (needsFrame) frame else -1, corrupt)
+                    onDone()
+                }
+            }) {
+                Text("🐺 Lobos", fontSize = 30.sp, fontWeight = FontWeight.Black, color = WolfColor)
+                val pack = m.names.indices.filter { m.alive[it] && m.isWolf(it) }
+                Text("Manada: " + pack.joinToString(", ") { m.names[it] }, color = WolfColor, fontWeight = FontWeight.SemiBold)
+                if (quiet) Muted("Primera noche tranquila: esta noche no atacan.")
+                if (!quiet) {
+                    Text("¿A quién atacan?", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp, bottom = 6.dp))
+                    targets.forEach { t -> PlayerCard(m.names[t], selected == t, "target-${m.names[t]}") { selected = t; if (frame == t) frame = -1 } }
+                }
+                if (needsFrame) {
+                    Text("¿A quién incriminan?", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 2.dp))
+                    Muted("Aparecerá en la escena del crimen junto a uno de ustedes.")
+                    Spacer(Modifier.height(6.dp))
+                    frameTargets.filter { it != selected }.forEach { t -> PlayerCard(m.names[t], frame == t, "frame-${m.names[t]}") { frame = t } }
+                    if (m.canCorrupt) {
+                        SwitchRow("💰 Comprar al testigo de mañana", "Solo una vez por partida: el testigo verá a dos inocentes", corrupt) { corrupt = it }
+                    }
+                }
+            }
+        }
+        Call.DOCTOR, Call.VIDENTE -> {
+            val targets = remember(st) { m.targetsFor(actor) }
+            val isSeer = st.call == Call.VIDENTE
+            val r = seer
+            Page(bottom = {
+                if (r == null) {
+                    BigButton("Confirmar", enabled = selected >= 0) {
+                        val res = game.narratorAct(actor, selected)
+                        if (isSeer && res != null) seer = res else onDone()
+                    }
+                } else {
+                    BigButton("Ya lo vi") { onDone() }
+                }
+            }) {
+                Text(if (isSeer) "🔮 Vidente" else "🩺 Doctor", fontSize = 30.sp, fontWeight = FontWeight.Black,
+                    color = roleColor(if (isSeer) Role.VIDENTE else Role.DOCTOR))
+                if (r == null) {
+                    if (!isSeer && m.doctorLast >= 0) Muted("No puedes repetir a ${m.names[m.doctorLast]}.")
+                    Text(if (isSeer) "¿A quién investigas?" else "¿A quién proteges esta noche?", fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(vertical = 10.dp))
+                    targets.forEach { t -> PlayerCard(m.names[t], selected == t, "target-${m.names[t]}") { selected = t } }
+                } else {
+                    Box(
+                        Modifier.fillMaxWidth().padding(top = 16.dp).background(MaterialTheme.colorScheme.surface, RoundedCornerShape(24.dp)).padding(24.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(if (r.isWolf) "🐺" else "🙂", fontSize = 56.sp)
+                            Text(m.names[r.target], fontSize = 28.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
+                            Text(if (r.isWolf) "ES LOBO" else "no es lobo", fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                                color = if (r.isWolf) WolfColor else VillageColor)
+                        }
+                    }
+                }
+            }
+        }
+        Call.TESTIGO -> {
+            Page(bottom = { BigButton("Ya lo vi") { onDone() } }) {
+                Text("🕯️ Testigo", fontSize = 30.sp, fontWeight = FontWeight.Black, color = Gold)
+                Spacer(Modifier.height(16.dp))
+                Text(game.witnessText(actor) ?: "Esta noche no viste nada raro.", fontSize = 21.sp, lineHeight = 29.sp)
+            }
+        }
+        else -> LaunchedEffect(st) { onDone() }
     }
 }

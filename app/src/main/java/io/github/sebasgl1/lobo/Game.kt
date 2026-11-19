@@ -17,6 +17,10 @@ sealed class Screen {
     data class Reveal(val index: Int) : Screen()
     data class NightPass(val turn: Int) : Screen()
     data class NightAct(val turn: Int) : Screen()
+    /** Modo narrador: antes de la primera noche, poner el celular en el centro de la mesa. */
+    data object NarratorReady : Screen()
+    /** Modo narrador: paso [step] del guion de la noche. */
+    data class NarratorNight(val step: Int) : Screen()
     data class Dawn(val deaths: List<Int>, val saved: Boolean) : Screen()
     data object Hunter : Screen()
     data object Day : Screen()
@@ -62,6 +66,9 @@ class Game(context: Context) {
     var anonSuspicions by mutableStateOf(prefs.getBoolean("anonSuspicions", false))
     var voteLog by mutableStateOf(prefs.getBoolean("voteLog", false))
     var sound by mutableStateOf(prefs.getBoolean("sound", true))
+    var narrator by mutableStateOf(prefs.getBoolean("narrator", false))
+    /** Solo para las pruebas automáticas: el narrador no espera ni habla. */
+    val fastNarrator = prefs.getBoolean("fastNarrator", false)
 
     // Partida en curso
     var match by mutableStateOf<Match?>(null)
@@ -76,20 +83,30 @@ class Game(context: Context) {
     /** Cambia cada vez que algo de la partida cambia, para que la pantalla se actualice. */
     var version by mutableIntStateOf(0)
         private set
+    /** Guion de la noche en curso (modo narrador). */
+    var steps by mutableStateOf(listOf<NarratorStep>())
+        private set
+    /** Cuánto se demoraron los turnos reales, para que los simulados duren parecido. */
+    private val realDurations = mutableListOf<Long>()
     private var checkpoint: String? = null
 
     init {
         restoreState()
     }
 
-    fun setup() = RoleSetup(lobos, vidente, doctor, cazador)
+    private fun baseSetup() = RoleSetup(lobos, vidente, doctor, cazador)
+
+    /** Con narrador y Modo Historia, el testigo es un rol fijo (si quedan al menos 2 aldeanos para no dejar el pueblo sin aldeanos). */
+    val testigoActive get() = narrator && story && witnessEvery > 0 && names.size - lobos - baseSetup().specials() >= 2
+
+    fun setup() = baseSetup().copy(testigo = testigoActive)
     fun setupError(): String? = Rules.setupError(names.size, setup())
     fun aldeanos() = names.size - lobos - setup().specials()
 
     val inGame get() = match != null && screen !is Screen.Home && screen !is Screen.HowTo && screen !is Screen.Setup && screen !is Screen.End
 
     fun recommended() = Rules.recommended(names.size)
-    val isRecommended get() = recommended() == setup()
+    val isRecommended get() = recommended() == baseSetup()
 
     fun applyRecommended() {
         val r = recommended()
@@ -120,13 +137,13 @@ class Game(context: Context) {
             .putInt("turnSeconds", turnSeconds).putBoolean("bigText", bigText)
             .putBoolean("story", story).putInt("witnessEvery", witnessEvery).putBoolean("corruption", corruption)
             .putBoolean("accusation", accusation).putBoolean("anonSuspicions", anonSuspicions).putBoolean("voteLog", voteLog)
-            .putBoolean("sound", sound)
+            .putBoolean("sound", sound).putBoolean("narrator", narrator)
             .apply()
     }
 
     private fun options() = Options(
         revealOnDeath = revealOnDeath, quietFirstNight = quietFirstNight,
-        story = story, witnessEvery = witnessEvery, corruption = corruption,
+        story = story, witnessEvery = witnessEvery, corruption = corruption, narrator = narrator,
     )
 
     // ---------- Flujo de la partida ----------
@@ -149,14 +166,140 @@ class Game(context: Context) {
 
     fun nextReveal(i: Int) {
         val m = match ?: return
-        if (i + 1 < m.size) go(Screen.Reveal(i + 1)) else beginNight()
+        if (i + 1 < m.size) go(Screen.Reveal(i + 1))
+        else if (m.options.narrator) go(Screen.NarratorReady)
+        else beginNight()
     }
 
-    private fun beginNight() {
+    fun beginNight() {
         val m = match ?: return
         m.startNight()
-        order = m.nightOrder()
-        go(Screen.NightPass(0))
+        if (m.options.narrator) {
+            if (m.night == 1) realDurations.clear()
+            steps = m.narratorSteps()
+            go(Screen.NarratorNight(0))
+        } else {
+            order = m.nightOrder()
+            go(Screen.NightPass(0))
+        }
+    }
+
+    // ---------- Modo narrador ----------
+
+    /** Los lobos escogen víctima (salvo noche tranquila), a quién incriminar y si compran al testigo. */
+    fun narratorWolves(target: Int, frame: Int, corrupt: Boolean) {
+        val m = match ?: return
+        val w = m.packActor()
+        if (w < 0) return
+        if (!m.isQuietNight && target >= 0 && !m.hasActed(w)) m.act(w, target)
+        if (frame >= 0 && frame in m.frameTargets(w)) m.frame(w, frame)
+        if (corrupt && m.canCorrupt) m.requestCorruption(w)
+        version++
+    }
+
+    /** Doctor o Vidente con narrador. */
+    fun narratorAct(actor: Int, target: Int): SeerResult? {
+        val m = match ?: return null
+        if (m.hasActed(actor)) return null
+        val r = m.act(actor, target)
+        version++
+        return r
+    }
+
+    fun noteRealDuration(ms: Long) { realDurations.add(ms) }
+
+    /** Duración de un turno simulado (rol muerto): parecida a lo que tardan los turnos reales. */
+    fun fakeDuration(): Long {
+        if (fastNarrator) return 50
+        val avg = if (realDurations.isEmpty()) 11_000L else realDurations.average().toLong()
+        val jitter = (avg * 0.3).toLong()
+        return (avg - jitter + (rng.nextDouble() * 2 * jitter).toLong()).coerceIn(8_000L, 30_000L)
+    }
+
+    /** Tiempo mínimo con los ojos abiertos en un turno real, para que no se note quién decidió rápido. */
+    fun minHold(): Long = if (fastNarrator) 30 else 7_000L + rng.nextInt(3_000)
+
+    fun pauseAfterClose(): Long = if (fastNarrator) 30 else 1_500L + rng.nextInt(1_500)
+
+    fun narratorNext(step: Int) {
+        val m = match ?: return
+        // Si mientras hablaba el narrador se salió de la partida, no seguir
+        if (screen != Screen.NarratorNight(step)) return
+        if (step + 1 < steps.size) {
+            go(Screen.NarratorNight(step + 1))
+        } else {
+            val d = m.resolveDawn()
+            stage = Stage.AFTER_DAWN
+            go(Screen.Dawn(d.deaths, d.saved))
+        }
+    }
+
+    private val intros = listOf(
+        "La noche vuelve a caer sobre el pueblo. Todos, cierren los ojos.",
+        "Se oculta el sol detrás de las montañas. Todos, cierren los ojos.",
+        "Otra noche más. El pueblo se va a dormir. Cierren los ojos.",
+        "La luna sale sobre el bosque. Todos, cierren los ojos.",
+    )
+
+    /** Lo que dice el narrador al llamar a un rol. */
+    fun callOpen(c: Call): String {
+        val m = match ?: return ""
+        val story = m.options.story
+        return when (c) {
+            Call.INTRO -> if (m.night == 1)
+                "Cae la noche sobre el pueblo. Todos, cierren los ojos. Mientras dure la noche, golpeen suavemente la mesa con los dedos."
+                else intros[m.night % intros.size]
+            Call.LOBOS -> {
+                val head = if (m.night == 1) "Lobos, abran los ojos y reconózcanse." else "Lobos, abran los ojos."
+                head + " " + when {
+                    m.isQuietNight && story -> "Esta noche no atacan. Escojan en silencio a quién incriminar, y uno de ustedes lo toca en el celular."
+                    m.isQuietNight -> "Esta noche no atacan. Cuando estén listos, uno de ustedes toca Listo."
+                    story -> "Pónganse de acuerdo en silencio, y uno de ustedes toca en el celular a su víctima y a quién quieren incriminar."
+                    else -> "Pónganse de acuerdo en silencio, y uno de ustedes toca en el celular a su víctima."
+                }
+            }
+            Call.DOCTOR -> "Doctor, abre los ojos. ¿A quién vas a proteger esta noche?"
+            Call.VIDENTE -> "Vidente, abre los ojos. ¿De quién quieres conocer la verdad?"
+            Call.TESTIGO -> "Testigo, abre los ojos. Mira el celular: esto es lo que viste esta noche."
+            Call.AMANECER -> "El sol empieza a salir sobre el pueblo. Todos, abran los ojos."
+        }
+    }
+
+    fun callClose(c: Call): String = when (c) {
+        Call.LOBOS -> "Lobos, cierren los ojos."
+        Call.DOCTOR -> "Doctor, cierra los ojos."
+        Call.VIDENTE -> "Vidente, cierra los ojos."
+        Call.TESTIGO -> "Testigo, cierra los ojos."
+        else -> ""
+    }
+
+    /** Lo que lee el narrador en voz alta en las pantallas públicas. */
+    fun narration(s: Screen): String? {
+        val m = match ?: return null
+        if (!m.options.narrator) return null
+        return when (s) {
+            is Screen.Dawn -> buildString {
+                append(dawnText(s.deaths, s.saved))
+                s.deaths.forEach { d ->
+                    append(if (m.options.revealOnDeath) " ${m.names[d]} era ${m.roles[d].label}." else " Su rol queda en secreto.")
+                }
+                sceneLines()?.let { (head, who) ->
+                    append(" $head ")
+                    append(who.joinToString("; "))
+                    append(". Al menos uno de ellos es lobo.")
+                }
+                if (m.pendingHunter < 0 && m.winner == null) append(" Ahora, el pueblo debe discutir.")
+            }
+            Screen.Hunter -> if (m.pendingHunter >= 0) "${m.names[m.pendingHunter]} era el cazador. Antes de morir, se lleva a alguien con él." else null
+            is Screen.Eliminated -> when {
+                s.player < 0 -> "El pueblo no eliminó a nadie. Todos a dormir… y que tengan cuidado."
+                s.cause == Cause.CAZADOR -> "${m.names[s.player]} cayó por el disparo del cazador." +
+                    if (m.options.revealOnDeath) " Era ${m.roles[s.player].label}." else ""
+                else -> "El pueblo eliminó a ${m.names[s.player]}." + if (m.options.revealOnDeath) " Era ${m.roles[s.player].label}." else ""
+            }
+            Screen.End -> if (m.winner == Team.LOBOS) "¡Ganan los lobos! El pueblo ha caído." else "¡Gana el pueblo! Ya no quedan lobos."
+            else -> null
+        }
     }
 
     /** Registra la acción del turno y devuelve lo que vio la Vidente, si aplica. */
@@ -347,7 +490,7 @@ class Game(context: Context) {
                 is Event.Scene -> if (e.suspects.isEmpty()) null else "🔎 Escena: " + e.suspects.joinToString(", ") { n(it) }
                 is Event.Witness -> "🕯️ ${n(e.witness)} fue testigo: vio a ${n(e.a)} y ${n(e.b)}" + if (e.corrupted) " (comprado por los lobos)" else ""
                 is Event.CorruptionUsed -> "💰 Los lobos compraron al testigo de la noche siguiente"
-                is Event.FrameVote -> "🎭 ${n(e.wolf)} quiso incriminar a ${n(e.target)}"
+                is Event.FrameVote -> if (m.options.narrator) "🎭 Los lobos incriminaron a ${n(e.target)}" else "🎭 ${n(e.wolf)} quiso incriminar a ${n(e.target)}"
                 is Event.VoteCast -> null
                 is Event.Propose, is Event.Suspect -> null
             }
@@ -421,7 +564,7 @@ class Game(context: Context) {
         o.put("reveal", m.options.revealOnDeath).put("quiet", m.options.quietFirstNight)
         o.put("story", m.options.story).put("witnessEvery", m.options.witnessEvery).put("corruption", m.options.corruption)
         o.put("witness", m.witness).put("pairA", m.witnessPair?.first ?: -1).put("pairB", m.witnessPair?.second ?: -1)
-        o.put("corruptNext", m.corruptNext).put("corruptUsed", m.corruptionUsed)
+        o.put("corruptNext", m.corruptNext).put("corruptUsed", m.corruptionUsed).put("narrator", m.options.narrator)
         o.put("stage", stage.name)
         o.put("order", JSONArray().also { a -> order.forEach { a.put(it) } })
         o.put("log", JSONArray().also { a -> m.log.forEach { a.put(eventJson(it)) } })
@@ -438,6 +581,17 @@ class Game(context: Context) {
                 o.put("acted", JSONArray().also { a -> m.nightActed().forEach { a.put(it) } })
             }
             is Screen.NightAct -> return checkpoint
+            is Screen.NarratorReady -> o.put("screen", "nready")
+            is Screen.NarratorNight -> {
+                o.put("screen", "nnight").put("turn", s.step).put("protect", m.nightProtect())
+                val pr = JSONObject()
+                m.nightProposals().forEach { (k, v) -> pr.put(k.toString(), v) }
+                o.put("proposals", pr)
+                val fr = JSONObject()
+                m.nightFrames().forEach { (k, v) -> fr.put(k.toString(), v) }
+                o.put("frames", fr)
+                o.put("acted", JSONArray().also { a -> m.nightActed().forEach { a.put(it) } })
+            }
             is Screen.Dawn -> o.put("screen", "dawn").put("deaths", JSONArray().also { a -> s.deaths.forEach { a.put(it) } }).put("saved", s.saved)
             is Screen.Hunter -> o.put("screen", "hunter")
             is Screen.Day, is Screen.Vote, is Screen.TieSelect, is Screen.TieVote,
@@ -476,6 +630,7 @@ class Game(context: Context) {
             val opts = Options(
                 revealOnDeath = o.getBoolean("reveal"), quietFirstNight = o.getBoolean("quiet"),
                 story = o.optBoolean("story", false), witnessEvery = o.optInt("witnessEvery", 1), corruption = o.optBoolean("corruption", false),
+                narrator = o.optBoolean("narrator", false),
             )
             val m = Match(nm, rl, opts, rng)
             m.restore(al, o.getInt("night"), o.getInt("docLast"), o.getBoolean("docSelf"), o.getInt("hunter"), win, ev)
@@ -485,7 +640,7 @@ class Game(context: Context) {
             match = m
             stage = Stage.valueOf(o.getString("stage"))
             order = o.getJSONArray("order").let { a -> (0 until a.length()).map { a.getInt(it) } }
-            if (o.getString("screen") == "night") {
+            if (o.getString("screen") == "night" || o.getString("screen") == "nnight") {
                 val pr = o.optJSONObject("proposals")
                 val props = mutableMapOf<Int, Int>()
                 if (pr != null) for (k in pr.keys()) props[k.toInt()] = pr.getInt(k)
@@ -495,10 +650,13 @@ class Game(context: Context) {
                 val frames = mutableMapOf<Int, Int>()
                 if (fr != null) for (k in fr.keys()) frames[k.toInt()] = fr.getInt(k)
                 m.restoreNight(props, o.optInt("protect", -1), done, frames)
+                if (opts.narrator) steps = m.narratorSteps()
             }
             screen = when (o.getString("screen")) {
                 "reveal" -> Screen.Reveal(0)
                 "night" -> Screen.NightPass(o.optInt("turn", 0).coerceIn(0, maxOf(0, order.size - 1)))
+                "nready" -> Screen.NarratorReady
+                "nnight" -> Screen.NarratorNight(o.optInt("turn", 0).coerceIn(0, maxOf(0, steps.size - 1)))
                 "dawn" -> Screen.Dawn(o.getJSONArray("deaths").let { a -> (0 until a.length()).map { a.getInt(it) } }, o.getBoolean("saved"))
                 "hunter" -> Screen.Hunter
                 "day" -> Screen.Day

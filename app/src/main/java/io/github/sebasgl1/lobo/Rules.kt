@@ -10,6 +10,8 @@ enum class Role(val label: String, val emoji: String, val team: Team) {
     VIDENTE("Vidente", "🔮", Team.PUEBLO),
     DOCTOR("Doctor", "🩺", Team.PUEBLO),
     CAZADOR("Cazador", "🏹", Team.PUEBLO),
+    /** Solo en Modo Historia con narrador: el aldeano fijo que es testigo en las noches que toca. */
+    TESTIGO("Testigo", "🕯️", Team.PUEBLO),
 }
 
 enum class Cause { LOBOS, VOTO, CAZADOR }
@@ -17,8 +19,8 @@ enum class Cause { LOBOS, VOTO, CAZADOR }
 /** Lo que cada jugador hace en su turno de la noche. Todos tocan un nombre, para que nadie se delate. */
 enum class Action { ATACAR, PROTEGER, INVESTIGAR, SOSPECHAR }
 
-data class RoleSetup(val lobos: Int, val vidente: Boolean, val doctor: Boolean, val cazador: Boolean) {
-    fun specials() = (if (vidente) 1 else 0) + (if (doctor) 1 else 0) + (if (cazador) 1 else 0)
+data class RoleSetup(val lobos: Int, val vidente: Boolean, val doctor: Boolean, val cazador: Boolean, val testigo: Boolean = false) {
+    fun specials() = (if (vidente) 1 else 0) + (if (doctor) 1 else 0) + (if (cazador) 1 else 0) + (if (testigo) 1 else 0)
 }
 
 data class Options(
@@ -32,6 +34,8 @@ data class Options(
     val witnessEvery: Int = 1,
     /** Los lobos pueden comprar al testigo de la noche siguiente, una vez por partida. */
     val corruption: Boolean = false,
+    /** Modo narrador: el celular queda en la mesa y la voz llama a cada rol con los ojos cerrados. */
+    val narrator: Boolean = false,
 )
 
 /** Todo lo que pasa en la partida, en orden. De aquí salen la línea de tiempo y el guardado. */
@@ -54,6 +58,12 @@ sealed class Event {
     data object CorruptionUsed : Event()
     data class VoteCast(val voter: Int, val target: Int) : Event()
 }
+
+/** A quién llama el narrador, en orden, durante la noche. */
+enum class Call { INTRO, LOBOS, DOCTOR, VIDENTE, TESTIGO, AMANECER }
+
+/** Un llamado del narrador. actor = -1: ese rol ya murió y el turno se simula para no delatarlo. */
+data class NarratorStep(val call: Call, val actor: Int)
 
 data class SeerResult(val target: Int, val isWolf: Boolean, val role: Role)
 
@@ -104,6 +114,7 @@ object Rules {
         if (s.vidente) specials.add(Role.VIDENTE)
         if (s.doctor) specials.add(Role.DOCTOR)
         if (s.cazador) specials.add(Role.CAZADOR)
+        if (s.testigo) specials.add(Role.TESTIGO)
         pool.shuffle(rng)
         val roles = Array(names.size) { Role.ALDEANO }
         wolves.forEach { roles[it] = Role.LOBO }
@@ -177,12 +188,19 @@ class Match(
         chooseWitness()
     }
 
-    /** Modo Historia: un aldeano vivo ve a dos personas; una es lobo (salvo que los lobos lo hayan comprado). */
+    /** ¿Esta noche hay testigo? (según la frecuencia escogida). */
+    val isWitnessNight get() = options.story && options.witnessEvery > 0 && (night - 1) % options.witnessEvery == 0
+
+    /**
+     * Modo Historia: un aldeano vivo ve a dos personas; una es lobo (salvo que los lobos lo hayan comprado).
+     * Pasando el celular es un aldeano al azar cada noche; con narrador es siempre el Testigo.
+     */
     private fun chooseWitness() {
         witness = -1
         witnessPair = null
-        if (!options.story || options.witnessEvery <= 0 || (night - 1) % options.witnessEvery != 0) return
-        val villagers = aliveList().filter { roles[it] == Role.ALDEANO }
+        if (!isWitnessNight) return
+        val villagers = if (options.narrator) aliveList().filter { roles[it] == Role.TESTIGO }
+            else aliveList().filter { roles[it] == Role.ALDEANO }
         if (villagers.isEmpty()) return
         val w = villagers[rng.nextInt(villagers.size)]
         val innocents = aliveList().filter { !isWolf(it) && it != w }
@@ -240,6 +258,27 @@ class Match(
         roles[p] == Role.DOCTOR -> Action.PROTEGER
         else -> Action.SOSPECHAR
     }
+
+    /**
+     * Guion de la noche con narrador. Se llama a todos los roles que hay en la partida, aunque estén
+     * muertos (con turno simulado), para que nadie sepa quién murió por los llamados.
+     */
+    fun narratorSteps(): List<NarratorStep> {
+        fun actorOf(r: Role): Int = holder(r).let { if (it >= 0 && alive[it]) it else -1 }
+        val out = mutableListOf(NarratorStep(Call.INTRO, -1))
+        out.add(NarratorStep(Call.LOBOS, packActor()))
+        if (holder(Role.DOCTOR) >= 0 && !isQuietNight) out.add(NarratorStep(Call.DOCTOR, actorOf(Role.DOCTOR)))
+        if (holder(Role.VIDENTE) >= 0) out.add(NarratorStep(Call.VIDENTE, actorOf(Role.VIDENTE)))
+        if (holder(Role.TESTIGO) >= 0 && isWitnessNight) out.add(NarratorStep(Call.TESTIGO, if (witness >= 0) witness else -1))
+        out.add(NarratorStep(Call.AMANECER, -1))
+        return out
+    }
+
+    /** Quién tiene un rol (vivo o muerto); -1 si no está en la partida. */
+    fun holder(r: Role): Int = roles.indexOf(r)
+
+    /** Con narrador, los lobos escogen juntos y uno toca el celular: se anota a nombre del primer lobo vivo. */
+    fun packActor(): Int = names.indices.firstOrNull { alive[it] && isWolf(it) } ?: -1
 
     fun doctorCanSelf(): Boolean = !options.doctorSelfOnce || !doctorSelfUsed
 

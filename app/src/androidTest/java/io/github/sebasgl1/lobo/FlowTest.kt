@@ -44,17 +44,17 @@ class FlowTest {
 
     private fun clickFirstTarget() = rule.onAllNodes(tagStarts("target-")).onFirst().performClick()
 
-    private fun startAndReveal() {
+    private fun startAndReveal(players: Int = 6) {
         rule.onNodeWithText("Jugar").performClick()
         rule.onNodeWithText("Repartir roles").performClick()
-        repeat(6) { i ->
+        repeat(players) { i ->
             rule.onNodeWithTag("reveal-box").performTouchInput { down(center) }
             rule.waitForIdle()
             assertTrue("no se vio el rol", hasPart("Eres "))
             rule.onNodeWithTag("reveal-box").performTouchInput { up() }
             rule.waitForIdle()
             assertTrue("el rol quedó a la vista", !hasPart("Eres "))
-            rule.onNodeWithText(if (i < 5) "Listo, pasar al siguiente" else "Listo, empezar la noche").performClick()
+            rule.onNodeWithText(if (i < players - 1) "Listo, pasar al siguiente" else "Listo, empezar la noche").performClick()
         }
     }
 
@@ -92,6 +92,12 @@ class FlowTest {
             has("Ir a votar") -> rule.onNodeWithText("Ir a votar").performClick()
             has("¿A quién elimina el pueblo?") && voteFirst -> { clickFirstTarget(); rule.onNodeWithText("Eliminar").performClick() }
             has("Continuar") -> rule.onNodeWithText("Continuar").performClick()
+            // Modo narrador
+            has("Empezar la noche") -> rule.onNodeWithText("Empezar la noche").performClick()
+            has("Ya lo vi") -> rule.onNodeWithText("Ya lo vi").performClick()
+            has("Listo") -> rule.onNodeWithText("Listo").performClick()
+            rule.onAllNodes(tagStarts("narrator-caption")).fetchSemanticsNodes().isNotEmpty() || has("Listo. Cierra los ojos.") ->
+                rule.mainClock.advanceTimeBy(300)
             else -> return false
         }
         return true
@@ -162,6 +168,34 @@ class FlowTest {
             }
             assertTrue("no apareció la escena del crimen", sawScene)
             assertTrue("no hubo ronda de acusación", sawAccusation || hasPart("Escena:"))
+            rule.onNodeWithText("Así fue la partida", substring = true, ignoreCase = true).assertExists()
+        }
+    }
+
+    @Test fun modoNarradorConTestigo() {
+        InstrumentationRegistry.getInstrumentation().targetContext
+            .getSharedPreferences("lobo", Context.MODE_PRIVATE).edit()
+            .putString("players", "Ana\nBeto\nCaro\nDani\nEli\nFer\nGabi\nHugo").putBoolean("cazador", false)
+            .putBoolean("narrator", true).putBoolean("fastNarrator", true)
+            .putBoolean("story", true).putInt("witnessEvery", 1).putBoolean("accusation", true)
+            .commit()
+        ActivityScenario.launch(MainActivity::class.java).use {
+            startAndReveal(8)
+            assertTrue("no apareció la preparación del narrador", has("Empezar la noche"))
+            var steps = 0
+            var sawCaption = false
+            var sawWolves = false
+            var sawWitness = false
+            while (!has("Otra partida")) {
+                if (rule.onAllNodes(tagStarts("narrator-caption")).fetchSemanticsNodes().isNotEmpty()) sawCaption = true
+                if (has("🐺 Lobos")) sawWolves = true
+                if (has("🕯️ Testigo")) sawWitness = true
+                assertTrue("pantalla desconocida", step())
+                assertTrue("la partida no termina", ++steps < 4000)
+            }
+            assertTrue("el narrador no habló", sawCaption)
+            assertTrue("no llamó a los lobos", sawWolves)
+            assertTrue("no llamó al testigo", sawWitness || hasPart("Testigo"))
             rule.onNodeWithText("Así fue la partida", substring = true, ignoreCase = true).assertExists()
         }
     }
