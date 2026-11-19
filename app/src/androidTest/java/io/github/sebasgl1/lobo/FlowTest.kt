@@ -42,6 +42,14 @@ class FlowTest {
         it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith(prefix) == true
     }
 
+    /** Textos visibles, para saber dónde se quedó una prueba. */
+    private fun dump(): String = runCatching {
+        rule.onAllNodes(SemanticsMatcher("todo") { true }).fetchSemanticsNodes().mapNotNull { n ->
+            n.config.getOrNull(SemanticsProperties.Text)?.joinToString(" ") { it.text }
+                ?: n.config.getOrNull(SemanticsProperties.TestTag)?.let { "#$it" }
+        }.joinToString(" | ").take(1500)
+    }.getOrElse { "sin pantalla: $it" }
+
     private fun clickFirstTarget() = rule.onAllNodes(tagStarts("target-")).onFirst().performClick()
 
     private fun startAndReveal(players: Int = 6) {
@@ -108,8 +116,8 @@ class FlowTest {
             startAndReveal()
             var steps = 0
             while (!has("Otra partida")) {
-                assertTrue("pantalla desconocida", step())
-                assertTrue("la partida no termina", ++steps < 400)
+                if (!step()) throw AssertionError("pantalla desconocida: " + dump())
+                if (++steps >= 400) throw AssertionError("la partida no termina: " + dump())
             }
             assertTrue(hasPart("¡Gana") )
             rule.onNodeWithText("Así fue la partida", substring = true, ignoreCase = true).assertExists()
@@ -163,8 +171,8 @@ class FlowTest {
             while (!has("Otra partida")) {
                 if (hasPart("Escena del crimen")) sawScene = true
                 if (hasPart("Todos señalen") || has("Escuchar defensas")) sawAccusation = true
-                assertTrue("pantalla desconocida", step())
-                assertTrue("la partida no termina", ++steps < 500)
+                if (!step()) throw AssertionError("pantalla desconocida: " + dump())
+                if (++steps >= 500) throw AssertionError("la partida no termina: " + dump())
             }
             assertTrue("no apareció la escena del crimen", sawScene)
             assertTrue("no hubo ronda de acusación", sawAccusation || hasPart("Escena:"))
@@ -190,8 +198,8 @@ class FlowTest {
                 if (rule.onAllNodes(tagStarts("narrator-caption")).fetchSemanticsNodes().isNotEmpty()) sawCaption = true
                 if (has("🐺 Lobos")) sawWolves = true
                 if (has("🕯️ Testigo")) sawWitness = true
-                assertTrue("pantalla desconocida", step())
-                assertTrue("la partida no termina", ++steps < 4000)
+                if (!step()) throw AssertionError("pantalla desconocida: " + dump())
+                if (++steps >= 4000) throw AssertionError("la partida no termina: " + dump())
             }
             assertTrue("el narrador no habló", sawCaption)
             assertTrue("no llamó a los lobos", sawWolves)

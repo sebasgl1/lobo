@@ -44,7 +44,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            ./gradlew connectedDebugAndroidTest --stacktrace
+            ./gradlew connectedDebugAndroidTest --stacktrace || (adb logcat -d -b crash; adb logcat -d -t 400 | grep -iE "AndroidRuntime|lobo|TestRunner|FATAL" | tail -150; exit 1)
             adb install -r app/build/outputs/apk/release/app-release.apk
             adb shell am start -W -n io.github.sebasgl1.lobo/.MainActivity
             sleep 3
