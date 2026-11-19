@@ -10,6 +10,7 @@ import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -50,7 +51,7 @@ class FlowTest {
         }.joinToString(" | ").take(1500)
     }.getOrElse { "sin pantalla: $it" }
 
-    private fun clickFirstTarget() = rule.onAllNodes(tagStarts("target-")).onFirst().performClick()
+    private fun clickFirstTarget() = rule.onAllNodes(tagStarts("target-")).onFirst().performScrollTo().performClick()
 
     private fun startAndReveal(players: Int = 6) {
         rule.onNodeWithText("Jugar").performClick()
@@ -74,7 +75,7 @@ class FlowTest {
             has("Confirmar") -> {
                 clickFirstTarget()
                 if (rule.onAllNodes(tagStarts("frame-")).fetchSemanticsNodes().isNotEmpty()) {
-                    rule.onAllNodes(tagStarts("frame-")).onFirst().performClick()
+                    rule.onAllNodes(tagStarts("frame-")).onFirst().performScrollTo().performClick()
                 }
                 rule.onNodeWithText("Confirmar").performClick()
             }
@@ -84,8 +85,8 @@ class FlowTest {
             }
             has("Disparar") -> { clickFirstTarget(); rule.onNodeWithText("Disparar").performClick() }
             has("Escuchar defensas") -> {
-                rule.onAllNodes(tagStarts("acc-"))[0].performClick()
-                rule.onAllNodes(tagStarts("acc-"))[1].performClick()
+                rule.onAllNodes(tagStarts("acc-"))[0].performScrollTo().performClick()
+                rule.onAllNodes(tagStarts("acc-"))[1].performScrollTo().performClick()
                 rule.onNodeWithText("Escuchar defensas").performClick()
             }
             hasPart("Todos señalen") -> rule.waitUntil(6000) { has("Escuchar defensas") }
@@ -93,7 +94,7 @@ class FlowTest {
             has("Ir a la votación") -> rule.onNodeWithText("Ir a la votación").performClick()
             has("Empezar la acusación") -> rule.onNodeWithText("Empezar la acusación").performClick()
             has("Guardar votos") -> {
-                rule.onAllNodes(tagStarts("voter-"))[0].performClick()
+                rule.onAllNodes(tagStarts("voter-"))[0].performScrollTo().performClick()
                 rule.onAllNodes(hasText("Nadie")).onFirst().performClick()
                 rule.onNodeWithText("Guardar votos").performClick()
             }
