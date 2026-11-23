@@ -110,11 +110,11 @@ def fadeout(x, sec=0.4):
 def save(name, x, q=4, stereo=None, loop=False, rms_db=None):
     if x.ndim == 1 and stereo: x = mono_to_st(x)
     if x.ndim == 2 and stereo is False: x = x.mean(1)
-    # el parlante del celular no reproduce graves: no gastar volumen en ellos
+    # solo se quita lo inaudible (por debajo de 25 Hz); los graves se conservan para celulares con subwoofer
     if loop:  # filtrado circular para que el bucle siga empalmando perfecto
-        x = hp(np.concatenate([x, x]), 90, 2)[len(x):]
+        x = hp(np.concatenate([x, x]), 25, 2)[len(x):]
     else:
-        x = hp(x, 90, 2)
+        x = hp(x, 25, 2)
     if rms_db is None:
         x = norm(x, 0.89)
     else:  # volumen parejo entre fondos; los picos se suavizan sin cortar
@@ -212,7 +212,7 @@ def bed_hoguera(sec=150):
     n = int(sec * SR)
     flick = ctrl(n, 0.8, 0.5, 1.0)
     out = np.zeros((n, 2))
-    roar = hp(lp(brown(n), 900), 160) * (0.55 + 0.45 * ctrl(n, 0.3)) * flick
+    roar = hp(lp(brown(n), 900), 35) * (0.55 + 0.45 * ctrl(n, 0.3)) * flick
     out += pan(norm(roar) * 0.55, 0)
     hiss = bp(white(n), 2000, 8000) * 0.06 * ctrl(n, 1.5, 0.4, 1.0)
     out += mono_to_st(hiss)
@@ -470,7 +470,7 @@ def fx_manada(k):
 
 def church_bell(f, dur=6.5, strike=1.0):
     tt = T(dur); x = np.zeros(len(tt))
-    partials = [(0.5, 0.2, 0.35), (1.0, 1.0, 0.6), (1.183, 0.6, 0.9), (1.506, 0.45, 1.1), (2.0, 0.6, 1.4),
+    partials = [(0.5, 0.5, 0.35), (1.0, 1.0, 0.6), (1.183, 0.6, 0.9), (1.506, 0.45, 1.1), (2.0, 0.6, 1.4),
                 (2.514, 0.35, 2.0), (2.662, 0.3, 2.2), (3.011, 0.3, 2.6), (4.166, 0.2, 3.4),
                 (5.433, 0.14, 4.5), (6.80, 0.09, 6.0), (8.31, 0.06, 8.0)]
     for ratio, g, dec in partials:
@@ -482,7 +482,7 @@ def church_bell(f, dur=6.5, strike=1.0):
     return fadeout(x, 1.2) * strike
 
 def fx_campana(k):
-    f = [262, 294][k]
+    f = [175, 196][k]
     x = church_bell(f, 7.5)
     if k == 1:  # dos campanadas
         y = church_bell(f, 6.0, 0.8); z = np.zeros(int(2.2 * SR) + len(y)); z[int(2.2 * SR):] = y
@@ -545,7 +545,7 @@ if __name__ == "__main__":
     which = sys.argv[2:] or ["beds", "shots", "fx"]
     if "beds" in which:
         save("amb_noche", bed_noche(), q=4, loop=True, rms_db=-19)
-        save("amb_hoguera", bed_hoguera(), q=4, loop=True, rms_db=-20)
+        save("amb_hoguera", bed_hoguera(), q=4, loop=True, rms_db=-21.5)
         save("amb_mercado", bed_mercado(), q=4, loop=True, rms_db=-19)
     if "shots" in which:
         for i in range(2): save(f"s_buho{i}", owl(i), q=3)
