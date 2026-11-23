@@ -137,11 +137,11 @@ class MainActivity : ComponentActivity() {
 val LocalFx = staticCompositionLocalOf<SoundFx?> { null }
 
 /** Sonido de fondo según la etapa del juego. */
-fun ambienceFor(s: Screen): Int = when (s) {
-    is Screen.NightPass, is Screen.NightAct, is Screen.NarratorNight -> R.raw.noche
+fun ambienceFor(s: Screen): Amb = when (s) {
+    is Screen.NightPass, is Screen.NightAct, is Screen.NarratorNight -> Amb.NOCHE
     is Screen.Dawn, Screen.Day, Screen.Vote, Screen.TieSelect, is Screen.TieVote, Screen.Accuse,
-    is Screen.Defense, is Screen.FinalVote, is Screen.VoteLog, is Screen.Eliminated, Screen.Hunter -> R.raw.mercado
-    else -> R.raw.hoguera
+    is Screen.Defense, is Screen.FinalVote, is Screen.VoteLog, is Screen.Eliminated, Screen.Hunter -> Amb.MERCADO
+    else -> Amb.HOGUERA
 }
 
 /** Pantallas donde no va el botón flotante de sonido: las secretas (para no tapar nada) y Configuración, que tiene su propio interruptor. */
@@ -191,21 +191,21 @@ fun App(game: Game, fx: SoundFx) {
 
     // Sonidos: fondo según la etapa y efectos al llegar a ciertas pantallas
     LaunchedEffect(game.sound) { fx.enabled = game.sound }
-    LaunchedEffect(ambienceFor(s), game.sound) { fx.ambience(if (game.sound) ambienceFor(s) else 0) }
+    LaunchedEffect(ambienceFor(s), game.sound) { fx.ambience(if (game.sound) ambienceFor(s) else Amb.NINGUNO) }
     LaunchedEffect(s) {
         val m = game.match
         when (s) {
             is Screen.Dawn -> when {
-                s.deaths.isNotEmpty() -> fx.play(R.raw.aullido)
+                s.deaths.isNotEmpty() -> fx.fx(Fx.AULLIDO)
                 s.saved -> fx.alive()
-                else -> fx.play(R.raw.pajaros)
+                else -> fx.fx(Fx.PAJAROS)
             }
             is Screen.Eliminated -> when (s.cause) {
-                Cause.CAZADOR -> fx.play(R.raw.flecha)
-                Cause.VOTO -> fx.play(R.raw.campana)
+                Cause.CAZADOR -> fx.fx(Fx.FLECHA)
+                Cause.VOTO -> fx.fx(Fx.CAMPANA)
                 else -> {}
             }
-            Screen.End -> fx.play(if (m?.winner == Team.LOBOS) R.raw.manada else R.raw.campanas)
+            Screen.End -> fx.fx(if (m?.winner == Team.LOBOS) Fx.MANADA else Fx.CAMPANAS)
             else -> {}
         }
         // Modo narrador: la voz lee en voz alta lo que pasó (después del efecto de sonido)
