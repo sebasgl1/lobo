@@ -85,7 +85,7 @@ class SoundFx(private val ctx: Context) {
             Shot(R.raw.s_buho0, 2, 0.35f, 0.7f), Shot(R.raw.s_buho1, 2, 0.35f, 0.7f),
             Shot(R.raw.s_rama0, 2, 0.3f, 0.6f), Shot(R.raw.s_rama1, 2, 0.3f, 0.6f), Shot(R.raw.s_rama2, 1, 0.3f, 0.6f),
             Shot(R.raw.s_ranas0, 2, 0.25f, 0.5f), Shot(R.raw.s_ranas1, 2, 0.25f, 0.5f),
-            Shot(R.raw.s_rafaga0, 2, 0.35f, 0.65f), Shot(R.raw.s_rafaga1, 2, 0.35f, 0.65f),
+            Shot(R.raw.s_rafaga0, 1, 0.3f, 0.55f), Shot(R.raw.s_rafaga1, 1, 0.3f, 0.55f),
             Shot(R.raw.s_aullidolejos0, 1, 0.3f, 0.55f), Shot(R.raw.s_aullidolejos1, 1, 0.3f, 0.55f),
         ),
         Amb.HOGUERA to listOf(

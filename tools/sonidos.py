@@ -540,9 +540,72 @@ def fx_pajaros(k):
     out *= np.clip(np.arange(len(out)) / (0.6 * SR), 0, 1)
     return reverb_tail(out, 1.4, 0.3, 0.6).mean(1)
 
+
+# ---------------------------------------------------------------- VIENTO DRAMÁTICO (v3)
+def whistle(d, f0, f_peak, depth=0.6):
+    """Silbido del viento entre las ramas: tono ruidoso que sube y baja con la ráfaga."""
+    n = int(d * SR); t = np.arange(n) / SR
+    shape = np.sin(np.pi * t / d) ** 1.6
+    f = f0 + (f_peak - f0) * shape * (0.85 + 0.15 * ctrl(n, 0.8))
+    f *= 1 + 0.012 * lp(white(n), 6) / 0.05   # temblor del silbido
+    ph = 2 * np.pi * np.cumsum(f) / SR
+    tone = np.sin(ph) + 0.25 * np.sin(2 * ph + 1.3)
+    am = np.clip(0.55 + 0.45 * ctrl(n, 3.0) + 0.25 * lp(white(n), 18) / 0.08, 0, 1.6)
+    breath = bp(white(n), 300, 2500) * 0.35
+    return (tone * am * depth + breath * (0.6 + 0.4 * shape)) * shape ** 1.2
+
+def dramatic_gust(d=None):
+    """Una ráfaga: soplido que crece, uno o dos silbidos que suben y bajan, y hojas en el pico."""
+    d = d or rng.uniform(4.0, 8.0); n = int(d * SR); t = np.arange(n) / SR
+    env = np.sin(np.pi * t / d) ** 2
+    whoosh = lp(bp(white(n), 120, 1400), 1600) * env
+    out = norm(whoosh) * 0.5
+    for k in range(int(rng.integers(1, 3))):
+        f0 = rng.uniform(420, 700); fp = f0 * rng.uniform(1.4, 2.1)
+        dd = d * rng.uniform(0.6, 0.95); off = rng.uniform(0, d - dd)
+        w = whistle(dd, f0, fp) * rng.uniform(0.25, 0.45)
+        i = int(off * SR); out[i:i + len(w)] += w[: n - i]
+    leaves = bp(white(n), 2500, 6500) * np.clip(env - 0.55, 0, 1) ** 2 * 0.5 * (0.6 + 0.4 * ctrl(n, 9))
+    return out + leaves
+
+def bed_noche_v3(sec=150):
+    n = int(sec * SR)
+    out = np.zeros((n, 2))
+    # fondo muy suave: casi calma
+    calm = lp(brown(n), 220) * 0.10 * (0.6 + 0.4 * ctrl(n, 0.05))
+    out += np.stack([calm, np.roll(calm, 5000)], 1)
+    # ráfagas espaciadas, cada una en un lado distinto, con calma entre ellas
+    t = rng.uniform(2, 6)
+    while t < sec - 2:
+        g = dramatic_gust()
+        g = g * rng.uniform(0.55, 1.0)
+        mono = np.zeros(n); i = int(t * SR); L = min(len(g), n - i); mono[i:i + L] = g[:L]
+        out += pan(mono, rng.uniform(-0.8, 0.8))
+        t += len(g) / SR + rng.uniform(6, 18)
+    # grillos (igual que antes, son lo que da la noche)
+    for i in range(6):
+        cf = rng.uniform(3900, 5600)
+        gg = cricket_voice(n, cf, rng.uniform(0.9, 1.8), int(rng.integers(3, 6)), rng.uniform(22, 32))
+        presence = np.clip(ctrl(n, 1 / 25) * 1.6 - 0.3, 0, 1)
+        out += pan(distant(gg * presence, rng.uniform(0.2, 0.8)) * 0.16, rng.uniform(-0.9, 0.9))
+    frogs_t = np.zeros(n); tt = 0.0
+    while tt < sec:
+        place(frogs_t, frog_croak(rng.uniform(0.8, 1.2), int(rng.integers(1, 3))) * rng.uniform(0.3, 1.0), tt)
+        tt += rng.exponential(1.6)
+    out += pan(distant(frogs_t, 0.85) * 0.06, -0.4)
+    out = reverb(out, 2.4, 0.3, bright=0.3)
+    return loop_stereo(out)
+
+def gust_v3(k):
+    return reverb_tail(dramatic_gust(rng.uniform(4.5, 7.0)), 2.0, 0.3, 0.3).mean(1)
+
 # ---------------------------------------------------------------- generar todo
 if __name__ == "__main__":
     which = sys.argv[2:] or ["beds", "shots", "fx"]
+    if "viento" in which:  # solo el viento nuevo (no toca la hoguera ni lo demás)
+        rng = np.random.default_rng(3303)
+        save("amb_noche", bed_noche_v3(), q=4, loop=True, rms_db=-23)
+        for i in range(2): save(f"s_rafaga{i}", gust_v3(i), q=3)
     if "beds" in which:
         save("amb_noche", bed_noche(), q=4, loop=True, rms_db=-19)
         save("amb_hoguera", bed_hoguera(), q=4, loop=True, rms_db=-21.5)
