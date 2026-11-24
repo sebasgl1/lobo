@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # para armar la lista de novedades desde la versión anterior
 
       - uses: actions/setup-java@v5
         with:
@@ -63,10 +65,18 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk lobo.apk
           ls -la lobo.apk
 
+      # Parches para que la app se actualice descargando solo lo que cambió
+      - name: Parches de actualización
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pip install --quiet bsdiff4
+          python3 .github/scripts/make_update.py
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
           name: Lobo ${{ env.VERSION }}
           target_commitish: ${{ github.sha }}
-          files: lobo.apk
+          files: ${{ env.UPDATE_FILES }}
           make_latest: true

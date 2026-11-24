@@ -97,6 +97,8 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.staticCompositionLocalOf
 import android.content.Intent
@@ -404,8 +406,123 @@ fun HomeScreen(game: Game) {
             Text("Lobo", fontSize = 48.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp)
             Spacer(Modifier.height(6.dp))
             Muted("El pueblo duerme… pero no todos.", align = TextAlign.Center)
+            Spacer(Modifier.height(18.dp))
+            UpdateButton()
         }
     }
+}
+
+// ---------- Actualizaciones ----------
+
+private sealed class Upd {
+    data object Idle : Upd()
+    data object Checking : Upd()
+    data object UpToDate : Upd()
+    data class Available(val info: UpdateInfo, val patch: PatchInfo?) : Upd()
+    data class Downloading(val progress: Float, val patch: Boolean) : Upd()
+    data class Ready(val apk: java.io.File, val name: String) : Upd()
+    data class Failed(val msg: String) : Upd()
+}
+
+private fun mb(bytes: Long) = "%.1f MB".format(bytes / 1_000_000.0).replace('.', ',')
+
+/** "Buscar actualización": descarga solo lo que cambió (o la app completa si no hay parche) y la instala. */
+@Composable
+fun UpdateButton() {
+    val ctx = LocalContext.current
+    val updater = remember { Updater(ctx.applicationContext) }
+    val scope = rememberCoroutineScope()
+    var st by remember { mutableStateOf<Upd>(Upd.Idle) }
+
+    TextButton(onClick = {
+        st = Upd.Checking
+        scope.launch {
+            st = runCatching { updater.check() }.fold(
+                onSuccess = { info -> if (info == null) Upd.UpToDate else Upd.Available(info, updater.patchFor(info)) },
+                onFailure = { Upd.Failed("No se pudo revisar. ¿Hay internet?") },
+            )
+        }
+    }, modifier = Modifier.testTag("update-check")) {
+        Text("v${updater.versionName} · Buscar actualización", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+    }
+
+    val s = st
+    if (s == Upd.Idle) return
+    val close = { st = Upd.Idle }
+    AlertDialog(
+        onDismissRequest = { if (s !is Upd.Downloading && s != Upd.Checking) close() },
+        title = {
+            Text(
+                when (s) {
+                    Upd.Checking -> "Buscando…"
+                    Upd.UpToDate -> "Estás al día"
+                    is Upd.Available -> "Versión ${s.info.versionName} disponible"
+                    is Upd.Downloading -> if (s.patch) "Descargando lo que cambió…" else "Descargando…"
+                    is Upd.Ready -> "Lista para instalar"
+                    is Upd.Failed -> "Algo falló"
+                    Upd.Idle -> ""
+                }
+            )
+        },
+        text = {
+            Column {
+                when (s) {
+                    Upd.Checking -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Upd.UpToDate -> Text("Ya tienes la última versión (v${updater.versionName}).")
+                    is Upd.Available -> {
+                        if (s.info.notes.isNotBlank()) {
+                            Text("Novedades:", fontWeight = FontWeight.Bold)
+                            Text(s.info.notes, fontSize = 14.sp, modifier = Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState()))
+                            Spacer(Modifier.height(10.dp))
+                        }
+                        Text(
+                            if (s.patch != null) "Descarga: ${mb(s.patch.size)} (solo lo que cambió, en vez de ${mb(s.info.apkSize)})"
+                            else "Descarga: ${mb(s.info.apkSize)} (la app completa)",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    is Upd.Downloading -> {
+                        LinearProgressIndicator(progress = { s.progress }, modifier = Modifier.fillMaxWidth())
+                        Spacer(Modifier.height(6.dp))
+                        Text("${(s.progress * 100).toInt()} %")
+                    }
+                    is Upd.Ready -> Text(
+                        if (updater.canInstall()) "Android te pedirá confirmar la instalación. Tu partida guardada se conserva."
+                        else "Primero permite que Lobo instale actualizaciones (solo se pide una vez) y vuelve aquí."
+                    )
+                    is Upd.Failed -> Text(s.msg)
+                    Upd.Idle -> {}
+                }
+            }
+        },
+        confirmButton = {
+            when (s) {
+                is Upd.Available -> TextButton(onClick = {
+                    st = Upd.Downloading(0f, s.patch != null)
+                    scope.launch {
+                        st = runCatching {
+                            updater.prepare(s.info) { p -> st = Upd.Downloading(p, s.patch != null) }
+                        }.fold(
+                            onSuccess = { Upd.Ready(it, s.info.versionName) },
+                            onFailure = { Upd.Failed(it.message ?: "No se pudo descargar. Intenta de nuevo.") },
+                        )
+                    }
+                }) { Text("Actualizar") }
+                is Upd.Ready -> {
+                    if (updater.canInstall()) TextButton(onClick = { runCatching { updater.install(s.apk) } }) { Text("Instalar") }
+                    else TextButton(onClick = { runCatching { updater.askInstallPermission() } }) { Text("Dar permiso") }
+                }
+                Upd.UpToDate, is Upd.Failed -> TextButton(onClick = close) { Text("Listo") }
+                else -> {}
+            }
+        },
+        dismissButton = {
+            when (s) {
+                is Upd.Available, is Upd.Ready -> TextButton(onClick = close) { Text("Ahora no") }
+                else -> {}
+            }
+        },
+    )
 }
 
 @Composable

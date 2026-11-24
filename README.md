@@ -14,3 +14,12 @@ El juego de Lobo (Mafia / Werewolf) en español, offline y en un solo celular. L
 - La partida se guarda si Android cierra la app
 
 Las reglas están en `Rules.kt` con pruebas (incluidas 10.000 partidas simuladas). Cada compilación corre pruebas de pantalla en un emulador y publica el APK en Releases.
+
+## Actualizaciones dentro de la app
+
+En la pantalla de inicio, "Buscar actualización" revisa el último Release de GitHub (`update.json`).
+Si hay un parche para la versión instalada, descarga solo lo que cambió (`lobo-desde-vX.patch`, formato
+LOBODIFF1 = bsdiff + zlib, ver `tools/delta.py`), reconstruye el APK nuevo, verifica su huella SHA-256 y
+abre el instalador de Android. Si no hay parche o algo falla, descarga la app completa.
+Cada compilación publica parches desde las 3 versiones anteriores (`.github/scripts/make_update.py`).
+La app solo usa internet al tocar ese botón.
