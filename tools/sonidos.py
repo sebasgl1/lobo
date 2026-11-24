@@ -568,7 +568,7 @@ def dramatic_gust(d=None):
     leaves = bp(white(n), 2500, 6500) * np.clip(env - 0.55, 0, 1) ** 2 * 0.5 * (0.6 + 0.4 * ctrl(n, 9))
     return out + leaves
 
-def bed_noche_v3(sec=150):
+def bed_noche_v3(sec=150, crickets=0.16, n_crickets=6):
     n = int(sec * SR)
     out = np.zeros((n, 2))
     # fondo muy suave: casi calma
@@ -583,11 +583,11 @@ def bed_noche_v3(sec=150):
         out += pan(mono, rng.uniform(-0.8, 0.8))
         t += len(g) / SR + rng.uniform(6, 18)
     # grillos (igual que antes, son lo que da la noche)
-    for i in range(6):
+    for i in range(n_crickets):
         cf = rng.uniform(3900, 5600)
         gg = cricket_voice(n, cf, rng.uniform(0.9, 1.8), int(rng.integers(3, 6)), rng.uniform(22, 32))
-        presence = np.clip(ctrl(n, 1 / 25) * 1.6 - 0.3, 0, 1)
-        out += pan(distant(gg * presence, rng.uniform(0.2, 0.8)) * 0.16, rng.uniform(-0.9, 0.9))
+        presence = np.clip(ctrl(n, 1 / 25) * 1.6 - 0.6, 0, 1)   # cantan menos rato
+        out += pan(distant(gg * presence, rng.uniform(0.4, 0.9)) * crickets, rng.uniform(-0.9, 0.9))
     frogs_t = np.zeros(n); tt = 0.0
     while tt < sec:
         place(frogs_t, frog_croak(rng.uniform(0.8, 1.2), int(rng.integers(1, 3))) * rng.uniform(0.3, 1.0), tt)
@@ -602,6 +602,17 @@ def gust_v3(k):
 # ---------------------------------------------------------------- generar todo
 if __name__ == "__main__":
     which = sys.argv[2:] or ["beds", "shots", "fx"]
+    if "noche_fogata" in which:  # noche: viento con silbidos + la misma fogata de fondo + pocos grillos
+        rng = np.random.default_rng(3303)
+        night = bed_noche_v3(crickets=0.05, n_crickets=3)
+        raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", os.path.join(OUT, "amb_hoguera.ogg"), "-ac", "2",
+                              "-f", "f32le", "-ar", str(SR), "-"], capture_output=True, check=True).stdout
+        fire = np.frombuffer(raw, np.float32).reshape(-1, 2).astype(float)
+        L = min(len(night), len(fire)); night = night[:L]
+        # misma duración que la noche: el bucle sigue empalmando; la fogata queda un poco más lejos
+        fire_far = np.stack([lp(np.concatenate([fire[:L, c], fire[:L, c]]), 6000)[L:] for c in range(2)], 1)
+        mix = night / (np.sqrt(np.mean(night ** 2)) + 1e-12) * 0.06 + fire_far / (np.sqrt(np.mean(fire_far ** 2)) + 1e-12) * 0.035
+        save("amb_noche", mix, q=4, loop=True, rms_db=-21)
     if "viento" in which:  # solo el viento nuevo (no toca la hoguera ni lo demás)
         rng = np.random.default_rng(3303)
         save("amb_noche", bed_noche_v3(), q=4, loop=True, rms_db=-23)
