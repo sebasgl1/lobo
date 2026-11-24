@@ -12,6 +12,10 @@ enum class Role(val label: String, val emoji: String, val team: Team) {
     CAZADOR("Cazador", "🏹", Team.PUEBLO),
     /** Solo en Modo Historia con narrador: el aldeano fijo que es testigo en las noches que toca. */
     TESTIGO("Testigo", "🕯️", Team.PUEBLO),
+    /** Aliado secreto de los lobos: conoce a la manada, ellos no lo conocen y la Vidente lo ve inocente. */
+    SABOTEADOR("Saboteador", "🗡️", Team.LOBOS),
+    /** Gana solo si el pueblo lo elimina en una votación (la partida sigue sin él). */
+    BUFON("Bufón", "🃏", Team.PUEBLO),
 }
 
 enum class Cause { LOBOS, VOTO, CAZADOR }
@@ -19,8 +23,11 @@ enum class Cause { LOBOS, VOTO, CAZADOR }
 /** Lo que cada jugador hace en su turno de la noche. Todos tocan un nombre, para que nadie se delate. */
 enum class Action { ATACAR, PROTEGER, INVESTIGAR, SOSPECHAR }
 
-data class RoleSetup(val lobos: Int, val vidente: Boolean, val doctor: Boolean, val cazador: Boolean, val testigo: Boolean = false) {
-    fun specials() = (if (vidente) 1 else 0) + (if (doctor) 1 else 0) + (if (cazador) 1 else 0) + (if (testigo) 1 else 0)
+data class RoleSetup(
+    val lobos: Int, val vidente: Boolean, val doctor: Boolean, val cazador: Boolean, val testigo: Boolean = false,
+    val saboteador: Boolean = false, val bufon: Boolean = false,
+) {
+    fun specials() = listOf(vidente, doctor, cazador, testigo, saboteador, bufon).count { it }
 }
 
 data class Options(
@@ -32,6 +39,12 @@ data class Options(
     val story: Boolean = false,
     /** Cada cuántas noches hay testigo en Modo Historia: 0 = nunca, 1 = cada noche, 2 = noche por medio. */
     val witnessEvery: Int = 1,
+    /** Primera noche con testigo. */
+    val witnessFrom: Int = 1,
+    /** Cuántas personas aparecen en la escena del crimen (3 o 4). */
+    val sceneSize: Int = 3,
+    /** Testigo difícil: la mitad de las veces, el inocente que vio también aparece en la escena (así cruzar pistas no delata al lobo). */
+    val witnessInScene: Boolean = false,
     /** Los lobos pueden comprar al testigo de la noche siguiente, una vez por partida. */
     val corruption: Boolean = false,
     /** Modo narrador: el celular queda en la mesa y la voz llama a cada rol con los ojos cerrados. */
@@ -80,6 +93,17 @@ object Rules {
         cazador = n >= 8,
     )
 
+    /**
+     * Reparto recomendado para el Modo Historia, para que pueblo y lobos ganen parecido (simulaciones: 44–58%).
+     * Desde 8 jugadores hay un Saboteador y desde 12 un lobo más.
+     */
+    fun recommendedStory(n: Int): RoleSetup = recommended(n).let { r ->
+        r.copy(lobos = r.lobos + if (n >= 12) 1 else 0, saboteador = n >= 8)
+    }
+
+    /** Sospechosos en la escena del crimen: 3 en grupos pequeños, 4 desde 7 jugadores. */
+    fun sceneSize(n: Int) = if (n >= 7) 4 else 3
+
     fun setupError(n: Int, s: RoleSetup): String? = when {
         n < MIN_PLAYERS -> "Se necesitan mínimo $MIN_PLAYERS jugadores"
         s.lobos < 1 -> "Debe haber al menos un lobo"
@@ -115,6 +139,8 @@ object Rules {
         if (s.doctor) specials.add(Role.DOCTOR)
         if (s.cazador) specials.add(Role.CAZADOR)
         if (s.testigo) specials.add(Role.TESTIGO)
+        if (s.saboteador) specials.add(Role.SABOTEADOR)
+        if (s.bufon) specials.add(Role.BUFON)
         pool.shuffle(rng)
         val roles = Array(names.size) { Role.ALDEANO }
         wolves.forEach { roles[it] = Role.LOBO }
@@ -163,6 +189,9 @@ class Match(
         private set
     var corruptionUsed = false
         private set
+    /** Testigo difícil: el inocente que vio el testigo y que también saldrá en la escena (-1 = nadie). */
+    var sceneGuest = -1
+        private set
 
     // Acciones de la noche en curso
     private val frames = LinkedHashMap<Int, Int>()
@@ -189,7 +218,17 @@ class Match(
     }
 
     /** ¿Esta noche hay testigo? (según la frecuencia escogida). */
-    val isWitnessNight get() = options.story && options.witnessEvery > 0 && (night - 1) % options.witnessEvery == 0
+    val isWitnessNight get() = options.story && options.witnessEvery > 0 && night >= options.witnessFrom &&
+        (night - options.witnessFrom) % options.witnessEvery == 0
+
+    /** ¿El Bufón logró que el pueblo lo eliminara? */
+    val bufonWon get() = log.any { it is Event.Died && it.cause == Cause.VOTO && roles[it.player] == Role.BUFON }
+
+    /** Quién ganó, jugador por jugador (el Bufón gana aparte; el Saboteador gana con los lobos). */
+    fun isWinner(p: Int): Boolean = when {
+        roles[p] == Role.BUFON -> bufonWon
+        else -> winner != null && roles[p].team == winner
+    }
 
     /**
      * Modo Historia: un aldeano vivo ve a dos personas; una es lobo (salvo que los lobos lo hayan comprado).
@@ -198,6 +237,7 @@ class Match(
     private fun chooseWitness() {
         witness = -1
         witnessPair = null
+        sceneGuest = -1
         if (!isWitnessNight) return
         val villagers = if (options.narrator) aliveList().filter { roles[it] == Role.TESTIGO }
             else aliveList().filter { roles[it] == Role.ALDEANO }
@@ -215,6 +255,7 @@ class Match(
         if (corrupted) corruptNext = false
         witness = w
         witnessPair = pair[0] to pair[1]
+        if (options.witnessInScene && !corrupted && rng.nextBoolean()) sceneGuest = pair.first { !isWolf(it) }
         log.add(Event.Witness(w, pair[0], pair[1], corrupted))
     }
 
@@ -310,7 +351,9 @@ class Match(
                 null
             }
             Action.INVESTIGAR -> {
-                val r = SeerResult(target, isWolf(target), roles[target])
+                // El Saboteador engaña a la Vidente: sale como un aldeano cualquiera
+                val shown = if (roles[target] == Role.SABOTEADOR) Role.ALDEANO else roles[target]
+                val r = SeerResult(target, isWolf(target), shown)
                 log.add(Event.Seen(p, target, r.isWolf))
                 r
             }
@@ -350,7 +393,10 @@ class Match(
         return DawnResult(deaths, saved, scene)
     }
 
-    /** Escena del crimen: un lobo vivo, el inocente incriminado y alguien más al azar. */
+    /**
+     * Escena del crimen: un lobo vivo, el inocente incriminado y el resto al azar hasta completar
+     * [Options.sceneSize]. Con testigo difícil, a veces uno de esos lugares es el inocente que vio el testigo.
+     */
     private fun buildScene(target: Int, saved: Boolean, deaths: List<Int>): List<Int> {
         val wolves = aliveList().filter { isWolf(it) }
         if (wolves.isEmpty()) return emptyList()
@@ -367,8 +413,10 @@ class Match(
         }
         val chosen = mutableListOf(wolf)
         if (framed >= 0) chosen.add(framed)
-        val rest = aliveList().filter { it !in chosen }
-        if (rest.isNotEmpty()) chosen.add(rest[rng.nextInt(rest.size)])
+        val size = options.sceneSize.coerceIn(2, 6)
+        if (sceneGuest >= 0 && alive[sceneGuest] && sceneGuest !in chosen && chosen.size < size) chosen.add(sceneGuest)
+        val rest = aliveList().filter { it !in chosen }.shuffled(rng)
+        chosen.addAll(rest.take((size - chosen.size).coerceAtLeast(0)))
         val suspects = chosen.shuffled(rng)
         log.add(Event.Scene(target, saved, suspects))
         return suspects
@@ -432,8 +480,8 @@ class Match(
 
     /** Restaura una partida guardada reproduciendo sus datos básicos. */
     /** Datos del Modo Historia al restaurar una partida guardada. */
-    fun restoreStory(w: Int, pair: Pair<Int, Int>?, corruptN: Boolean, corruptUsed: Boolean) {
-        witness = w; witnessPair = pair; corruptNext = corruptN; corruptionUsed = corruptUsed
+    fun restoreStory(w: Int, pair: Pair<Int, Int>?, corruptN: Boolean, corruptUsed: Boolean, guest: Int = -1) {
+        witness = w; witnessPair = pair; corruptNext = corruptN; corruptionUsed = corruptUsed; sceneGuest = guest
     }
 
     /** Registra quién votó por quién en el día (opcional). */

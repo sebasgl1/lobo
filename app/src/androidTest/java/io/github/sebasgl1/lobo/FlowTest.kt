@@ -187,6 +187,7 @@ class FlowTest {
             .putString("players", "Ana\nBeto\nCaro\nDani\nEli\nFer\nGabi\nHugo").putBoolean("cazador", false)
             .putBoolean("narrator", true).putBoolean("fastNarrator", true)
             .putBoolean("story", true).putInt("witnessEvery", 1).putBoolean("accusation", true)
+            .putBoolean("saboteador", true).putBoolean("bufon", true)   // también prueba los roles nuevos
             .commit()
         ActivityScenario.launch(MainActivity::class.java).use {
             startAndReveal(8)

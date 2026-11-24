@@ -67,6 +67,10 @@ class Game(context: Context) {
     var voteLog by mutableStateOf(prefs.getBoolean("voteLog", false))
     var sound by mutableStateOf(prefs.getBoolean("sound", true))
     var narrator by mutableStateOf(prefs.getBoolean("narrator", false))
+    /** Modo Historia: aliado secreto de los lobos (recomendado desde 8 jugadores). */
+    var saboteador by mutableStateOf(prefs.getBoolean("saboteador", false))
+    /** Rol opcional: gana si el pueblo lo elimina. */
+    var bufon by mutableStateOf(prefs.getBoolean("bufon", false))
     /** Solo para las pruebas automáticas: el narrador no espera ni habla. */
     val fastNarrator = prefs.getBoolean("fastNarrator", false)
 
@@ -91,10 +95,15 @@ class Game(context: Context) {
     private var checkpoint: String? = null
 
     init {
+        // Balance del Modo Historia (v0.4): el testigo pasa a ser noche por medio por defecto
+        if (!prefs.getBoolean("balance2", false)) {
+            if (witnessEvery == 1) witnessEvery = 2
+            prefs.edit().putInt("witnessEvery", witnessEvery).putBoolean("balance2", true).apply()
+        }
         restoreState()
     }
 
-    private fun baseSetup() = RoleSetup(lobos, vidente, doctor, cazador)
+    private fun baseSetup() = RoleSetup(lobos, vidente, doctor, cazador, saboteador = story && saboteador, bufon = bufon)
 
     /** Con narrador y Modo Historia, el testigo es un rol fijo (si quedan al menos 2 aldeanos para no dejar el pueblo sin aldeanos). */
     val testigoActive get() = narrator && story && witnessEvery > 0 && names.size - lobos - baseSetup().specials() >= 2
@@ -105,13 +114,22 @@ class Game(context: Context) {
 
     val inGame get() = match != null && screen !is Screen.Home && screen !is Screen.HowTo && screen !is Screen.Setup && screen !is Screen.End
 
-    fun recommended() = Rules.recommended(names.size)
-    val isRecommended get() = recommended() == baseSetup()
+    /** El reparto recomendado cambia según el modo: en Historia hay Saboteador desde 8 y un lobo más desde 12. */
+    fun recommended() = if (story) Rules.recommendedStory(names.size) else Rules.recommended(names.size)
+    val isRecommended get() = recommended() == baseSetup().copy(bufon = false)
 
     fun applyRecommended() {
         val r = recommended()
         lobos = r.lobos; vidente = r.vidente; doctor = r.doctor; cazador = r.cazador
+        if (story) saboteador = r.saboteador
         saveConfig()
+    }
+
+    /** Cambia entre Clásico e Historia; si estaba con el reparto recomendado, lo ajusta al del modo nuevo. */
+    fun changeStory(v: Boolean) {
+        val wasRec = isRecommended
+        story = v
+        if (wasRec) applyRecommended() else saveConfig()
     }
 
     fun addName(raw: String): Boolean {
@@ -138,12 +156,15 @@ class Game(context: Context) {
             .putBoolean("story", story).putInt("witnessEvery", witnessEvery).putBoolean("corruption", corruption)
             .putBoolean("accusation", accusation).putBoolean("anonSuspicions", anonSuspicions).putBoolean("voteLog", voteLog)
             .putBoolean("sound", sound).putBoolean("narrator", narrator)
+            .putBoolean("saboteador", saboteador).putBoolean("bufon", bufon)
             .apply()
     }
 
     private fun options() = Options(
         revealOnDeath = revealOnDeath, quietFirstNight = quietFirstNight,
         story = story, witnessEvery = witnessEvery, corruption = corruption, narrator = narrator,
+        // Balance del Modo Historia: testigo desde la 2ª noche, escena de 3 o 4 según el grupo y testigo difícil
+        witnessFrom = 2, sceneSize = Rules.sceneSize(names.size), witnessInScene = story,
     )
 
     // ---------- Flujo de la partida ----------
@@ -295,9 +316,11 @@ class Game(context: Context) {
                 s.player < 0 -> "El pueblo no eliminó a nadie. Todos a dormir… y que tengan cuidado."
                 s.cause == Cause.CAZADOR -> "${m.names[s.player]} cayó por el disparo del cazador." +
                     if (m.options.revealOnDeath) " Era ${m.roles[s.player].label}." else ""
+                m.roles[s.player] == Role.BUFON -> "El pueblo eliminó a ${m.names[s.player]}… ¡y era el Bufón! Eso era justo lo que quería."
                 else -> "El pueblo eliminó a ${m.names[s.player]}." + if (m.options.revealOnDeath) " Era ${m.roles[s.player].label}." else ""
             }
-            Screen.End -> if (m.winner == Team.LOBOS) "¡Ganan los lobos! El pueblo ha caído." else "¡Gana el pueblo! Ya no quedan lobos."
+            Screen.End -> (if (m.winner == Team.LOBOS) "¡Ganan los lobos! El pueblo ha caído." else "¡Gana el pueblo! Ya no quedan lobos.") +
+                (if (m.bufonWon) " Y el Bufón también ganó." else "")
             else -> null
         }
     }
@@ -512,7 +535,7 @@ class Game(context: Context) {
         val all = loadStats().toMutableMap()
         m.names.forEachIndexed { i, n ->
             val s = all[n] ?: PlayerStats(0, 0, 0, 0)
-            val won = m.roles[i].team == w
+            val won = m.isWinner(i)
             val wolf = m.roles[i] == Role.LOBO
             all[n] = PlayerStats(s.played + 1, s.wins + (if (won) 1 else 0), s.wolfGames + (if (wolf) 1 else 0), s.wolfWins + (if (wolf && won) 1 else 0))
         }
@@ -566,6 +589,8 @@ class Game(context: Context) {
         o.put("story", m.options.story).put("witnessEvery", m.options.witnessEvery).put("corruption", m.options.corruption)
         o.put("witness", m.witness).put("pairA", m.witnessPair?.first ?: -1).put("pairB", m.witnessPair?.second ?: -1)
         o.put("corruptNext", m.corruptNext).put("corruptUsed", m.corruptionUsed).put("narrator", m.options.narrator)
+        o.put("witnessFrom", m.options.witnessFrom).put("sceneSize", m.options.sceneSize)
+            .put("witnessInScene", m.options.witnessInScene).put("guest", m.sceneGuest)
         o.put("stage", stage.name)
         o.put("order", JSONArray().also { a -> order.forEach { a.put(it) } })
         o.put("log", JSONArray().also { a -> m.log.forEach { a.put(eventJson(it)) } })
@@ -632,12 +657,14 @@ class Game(context: Context) {
                 revealOnDeath = o.getBoolean("reveal"), quietFirstNight = o.getBoolean("quiet"),
                 story = o.optBoolean("story", false), witnessEvery = o.optInt("witnessEvery", 1), corruption = o.optBoolean("corruption", false),
                 narrator = o.optBoolean("narrator", false),
+                witnessFrom = o.optInt("witnessFrom", 1), sceneSize = o.optInt("sceneSize", 3),
+                witnessInScene = o.optBoolean("witnessInScene", false),
             )
             val m = Match(nm, rl, opts, rng)
             m.restore(al, o.getInt("night"), o.getInt("docLast"), o.getBoolean("docSelf"), o.getInt("hunter"), win, ev)
             val pa = o.optInt("pairA", -1); val pb = o.optInt("pairB", -1)
             m.restoreStory(o.optInt("witness", -1), if (pa >= 0 && pb >= 0) pa to pb else null,
-                o.optBoolean("corruptNext", false), o.optBoolean("corruptUsed", false))
+                o.optBoolean("corruptNext", false), o.optBoolean("corruptUsed", false), o.optInt("guest", -1))
             match = m
             stage = Stage.valueOf(o.getString("stage"))
             order = o.getJSONArray("order").let { a -> (0 until a.length()).map { a.getInt(it) } }

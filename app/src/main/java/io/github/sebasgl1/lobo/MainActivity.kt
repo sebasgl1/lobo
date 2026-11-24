@@ -381,6 +381,8 @@ fun roleDescription(r: Role) = when (r) {
     Role.DOCTOR -> "Cada noche proteges a alguien. No puedes repetir dos noches seguidas."
     Role.CAZADOR -> "Si mueres, te llevas a alguien contigo."
     Role.TESTIGO -> "Eres un aldeano que ve cosas: algunas noches el narrador te despierta y ves a dos personas. Una de ellas es lobo."
+    Role.SABOTEADOR -> "Estás del lado de los lobos, pero ellos no lo saben. La Vidente te ve como inocente. Ayúdalos sin que te descubran: ganas si ganan los lobos."
+    Role.BUFON -> "Ganas si el pueblo te elimina en una votación. Haz que sospechen de ti… sin que se note que lo buscas. Si te matan de noche, pierdes."
 }
 
 /** Al salir de una pantalla con campo de texto, cierra el teclado para que no aplaste la siguiente pantalla. */
@@ -542,8 +544,11 @@ fun HowToScreen(game: Game) {
             "🏹 Cazador" to "Si muere, de noche o por votación, se lleva a alguien con él.",
             "🗣️ Ronda de acusación" to "Antes de votar, la app hace 3-2-1 y todos señalan a su sospechoso. Los dos más señalados se defienden 30 segundos cada uno y se vota solo entre ellos.",
             "🕵️ Cómo encontrar al lobo" to "Miren a quién matan los lobos (suelen ir por quien los acusa). Si nadie murió, el Doctor acertó. La Vidente sabe la verdad, pero si lo dice muy pronto la matan. Cuando cae un lobo, revisen quién lo defendió. Quien nunca acusa a nadie también es sospechoso.",
-            "📖 Modo Historia: la escena" to "Cada mañana la app cuenta quiénes estuvieron cerca del crimen. De esos tres, al menos uno es lobo… pero los lobos escogen a un inocente para incriminarlo, que también aparece.",
-            "🕯️ Modo Historia: el testigo" to "Algunas noches un aldeano es testigo: ve a dos personas y una de ellas es lobo. Solo él lo sabe. Puede contarlo o guardarlo, y un lobo puede mentir diciendo que también fue testigo.",
+            "📖 Modo Historia: la escena" to "Cada mañana la app cuenta quiénes estuvieron cerca del crimen: 3 personas, o 4 si son 7 jugadores o más. Al menos uno es lobo… pero los lobos escogen a un inocente para incriminarlo, que también aparece.",
+            "🕯️ Modo Historia: el testigo" to "Desde la segunda noche, algunas noches un aldeano es testigo: ve a dos personas y una de ellas es lobo. Solo él lo sabe. Ojo: a veces el inocente que vio también sale en la escena, así que no basta con cruzar nombres.",
+            "🗡️ Saboteador" to "En Modo Historia desde 8 jugadores. Juega con los lobos, pero ellos no saben quién es, y la Vidente lo ve como inocente. Gana si ganan los lobos. Que alguien salga 'inocente' no lo libra de sospecha.",
+            "🃏 Bufón (opcional)" to "Gana si el pueblo lo elimina en una votación; la partida sigue sin él. Si lo matan de noche o lo dispara el cazador, pierde. Cuidado con votar al que parece demasiado culpable.",
+            "⚖️ Balance" to "El Modo Historia se ajusta solo según cuántos jueguen (escena, testigo, Saboteador y lobos) para que pueblo y lobos ganen más o menos la mitad de las veces.",
             "🎙️ Modo narrador" to "El celular queda en el centro de la mesa y una voz hace de narrador, como en el juego de siempre: todos cierran los ojos y solo abre los ojos el rol que llaman, que toca su elección en la pantalla. Sirve con Clásico y con Historia.",
             "🤫 Para no delatarse" to "El narrador llama a todos los roles aunque ya hayan muerto, y cada turno dura parecido. Mientras sea de noche, golpeen suavemente la mesa con los dedos para tapar los toques en la pantalla.",
             "🕯️ Testigo (con narrador)" to "En Modo Historia con narrador, el testigo es un rol fijo: algunas noches el narrador lo despierta y le muestra a dos personas, una es lobo. Si dos dicen ser el Testigo, uno miente.",
@@ -611,9 +616,9 @@ fun SetupScreen(game: Game) {
             item {
                 SectionTitle("Modo de juego")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = !game.story, onClick = { game.story = false; game.saveConfig() },
+                    FilterChip(selected = !game.story, onClick = { game.changeStory(false) },
                         label = { Text("🌙 Clásico") }, modifier = Modifier.testTag("mode-classic"))
-                    FilterChip(selected = game.story, onClick = { game.story = true; game.saveConfig() },
+                    FilterChip(selected = game.story, onClick = { game.changeStory(true) },
                         label = { Text("📖 Historia") }, modifier = Modifier.testTag("mode-story"))
                 }
                 Muted(
@@ -623,6 +628,11 @@ fun SetupScreen(game: Game) {
                 )
                 if (game.story) {
                     Spacer(Modifier.height(6.dp))
+                    Muted(
+                        "🔎 Escena del crimen con ${Rules.sceneSize(n)} sospechosos" +
+                            if (n >= 7) " (con 7 o más jugadores hay uno más para que no sea tan fácil)" else "",
+                        Modifier.padding(start = 4.dp, bottom = 4.dp),
+                    )
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 3.dp).background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
                             .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -630,8 +640,11 @@ fun SetupScreen(game: Game) {
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text("🕯️ Testigos", fontSize = 16.sp)
-                            Muted(if (game.narrator) "Con narrador es un rol fijo: el Testigo ve a dos personas; una es lobo. Recomendado: noche por medio."
-                                else "Un aldeano ve a dos personas; una es lobo")
+                            Muted(
+                                (if (game.narrator) "Con narrador es un rol fijo: el Testigo ve a dos personas; una es lobo."
+                                else "Un aldeano ve a dos personas; una es lobo.") +
+                                    " Empieza la 2ª noche, y a veces el inocente que ve también sale en la escena. Recomendado: noche por medio."
+                            )
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 4.dp)) {
@@ -639,6 +652,11 @@ fun SetupScreen(game: Game) {
                             FilterChip(selected = game.witnessEvery == v, onClick = { game.witnessEvery = v; game.saveConfig() }, label = { Text(l) })
                         }
                     }
+                    SwitchRow(
+                        "🗡️ Saboteador",
+                        "Aliado secreto de los lobos: ellos no saben quién es y la Vidente lo ve inocente. Recomendado desde 8 jugadores",
+                        game.saboteador, tag = "saboteador",
+                    ) { game.saboteador = it; game.saveConfig() }
                     SwitchRow("💰 Los lobos pueden comprar un testigo", "Una vez por partida, el testigo de la noche siguiente ve a dos inocentes", game.corruption) { game.corruption = it; game.saveConfig() }
                     if (!game.narrator) {
                         SwitchRow("🗳️ Sospechas anónimas", "Cada mañana se muestra de quién sospecha el pueblo, sin nombres", game.anonSuspicions) { game.anonSuspicions = it; game.saveConfig() }
@@ -666,14 +684,22 @@ fun SetupScreen(game: Game) {
                 SwitchRow("🔮 Vidente", "Descubre si alguien es lobo", game.vidente) { game.vidente = it; game.saveConfig() }
                 SwitchRow("🩺 Doctor", "Protege a alguien cada noche", game.doctor) { game.doctor = it; game.saveConfig() }
                 SwitchRow("🏹 Cazador", "Al morir se lleva a alguien", game.cazador) { game.cazador = it; game.saveConfig() }
+                SwitchRow("🃏 Bufón (opcional)", "Gana solo si el pueblo lo elimina en una votación. Pone caos y risas", game.bufon, tag = "bufon") {
+                    game.bufon = it; game.saveConfig()
+                }
                 Spacer(Modifier.height(6.dp))
-                Muted("👨‍🌾 Aldeanos: ${maxOf(0, game.aldeanos())}" + if (game.testigoActive) " · 🕯️ Testigo: 1" else "", Modifier.padding(start = 4.dp))
+                Muted(
+                    "👨‍🌾 Aldeanos: ${maxOf(0, game.aldeanos())}" + (if (game.testigoActive) " · 🕯️ Testigo: 1" else "") +
+                        (if (game.story && game.saboteador) " · 🗡️ Saboteador: 1" else "") + (if (game.bufon) " · 🃏 Bufón: 1" else ""),
+                    Modifier.padding(start = 4.dp),
+                )
                 if (game.narrator && game.story && game.witnessEvery > 0 && !game.testigoActive) {
                     Muted("No alcanzan los aldeanos para el Testigo: esta partida será sin testigo.", Modifier.padding(start = 4.dp, top = 2.dp))
                 }
                 if (n >= Rules.MIN_PLAYERS) {
                     val r = game.recommended()
-                    val extras = listOfNotNull(if (r.vidente) "Vidente" else null, if (r.doctor) "Doctor" else null, if (r.cazador) "Cazador" else null)
+                    val extras = listOfNotNull(if (r.vidente) "Vidente" else null, if (r.doctor) "Doctor" else null, if (r.cazador) "Cazador" else null,
+                        if (r.saboteador) "Saboteador" else null)
                     Row(
                         Modifier.fillMaxWidth().padding(top = 10.dp).background(MaterialTheme.colorScheme.secondaryContainer, RoundedCornerShape(14.dp))
                             .padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
@@ -810,6 +836,13 @@ fun RevealScreen(game: Game, s: Screen.Reveal) {
                     Text("Eres ${r.label}", fontSize = 34.sp, fontWeight = FontWeight.Black, color = roleColor(r), textAlign = TextAlign.Center)
                     Spacer(Modifier.height(8.dp))
                     Muted(roleDescription(r), align = TextAlign.Center)
+                    if (r == Role.SABOTEADOR) {
+                        val pack = m.names.indices.filter { m.isWolf(it) }
+                        Spacer(Modifier.height(10.dp))
+                        Text("Los lobos son: " + pack.joinToString(", ") { m.names[it] }, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                            color = WolfColor, textAlign = TextAlign.Center)
+                        Muted("Ellos no saben que estás de su lado.", align = TextAlign.Center)
+                    }
                     if (r == Role.LOBO) {
                         val mates = m.wolfMates(p)
                         Spacer(Modifier.height(10.dp))
@@ -1334,6 +1367,11 @@ fun EliminatedScreen(game: Game, s: Screen.Eliminated) {
                 Text(m.names[s.player], fontSize = 34.sp, fontWeight = FontWeight.Black, textAlign = TextAlign.Center)
                 Muted(if (s.cause == Cause.CAZADOR) "cayó por el disparo del cazador" else "fue eliminado por el pueblo", align = TextAlign.Center)
                 Spacer(Modifier.height(16.dp))
+                if (s.cause == Cause.VOTO && m.roles[s.player] == Role.BUFON) {
+                    Text("🃏 ¡Era el Bufón!", fontSize = 24.sp, fontWeight = FontWeight.Black, color = Gold, textAlign = TextAlign.Center)
+                    Muted("Quería que lo eliminaran… y lo logró. Ya ganó, pero la partida sigue.", align = TextAlign.Center)
+                    Spacer(Modifier.height(12.dp))
+                }
                 if (m.options.revealOnDeath) {
                     Muted("Era", align = TextAlign.Center)
                     Spacer(Modifier.height(6.dp))
@@ -1361,12 +1399,14 @@ fun EndScreen(game: Game) {
             Text(if (w == Team.LOBOS) "🐺" else "👨‍🌾", fontSize = 64.sp)
             Text(if (w == Team.LOBOS) "¡Ganan los lobos!" else "¡Gana el pueblo!", fontSize = 30.sp, fontWeight = FontWeight.Black,
                 color = if (w == Team.LOBOS) WolfColor else VillageColor, textAlign = TextAlign.Center)
+            if (m.bufonWon) Text("🃏 …y el Bufón también ganó", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Gold)
+            if (w == Team.LOBOS && m.roles.contains(Role.SABOTEADOR)) Muted("🗡️ El Saboteador gana con ellos", align = TextAlign.Center)
         }
         SectionTitle("Roles")
         m.names.indices.forEach { i ->
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(m.names[i] + if (!m.alive[i]) " ✝" else "", fontSize = 17.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${m.roles[i].emoji} ${m.roles[i].label}", color = roleColor(m.roles[i]), fontWeight = FontWeight.SemiBold)
+                Text("${m.roles[i].emoji} ${m.roles[i].label}" + if (m.isWinner(i)) " 🏆" else "", color = roleColor(m.roles[i]), fontWeight = FontWeight.SemiBold)
             }
         }
         val sus = game.suspicions()
